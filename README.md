@@ -4,7 +4,7 @@ A modern web application for visualizing large scientific data files with intera
 
 ## Features
 
-- **File Upload**: Supports `.h13d18`, `.mid12`, and `.noig` data files
+- **File Upload**: Supports HYDROTHERM Plot_scalar and Plot_vector data files
 - **Variable Selection**: Choose from Temperature, Pressure, Saturation, and Phase variables
 - **Colormap Options**: Multiple colormap options including Viridis, Plasma, Inferno, and more
 - **Time Navigation**: Interactive slider to navigate through different time points
