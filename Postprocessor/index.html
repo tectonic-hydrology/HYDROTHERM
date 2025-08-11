@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scalar Data Visualizer</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://code.jquery.com/ui/1.14.1/themes/base/jquery-ui.css">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <style>
+        :root {
+            --bg-gradient: linear-gradient(135deg, #20bf6b 0%, #0fb9b1 100%);
+            --main-bg: rgba(255, 255, 255, 0.95);
+            --control-bg: linear-gradient(135deg, #20bf6b 0%, #0fb9b1 100%);
+            --text-color: #333;
+            --plot-bg: white;
+            --plot-paper-bg: white;
+            --grid-color: lightgray;
+            --border-color: rgba(0, 0, 0, 0.1);
+        }
+        
+        [data-theme="dark"] {
+            --bg-gradient: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            --main-bg: rgba(30, 30, 30, 0.95);
+            --control-bg: linear-gradient(135deg, #20bf6b 0%, #0fb9b1 100%);
+            --text-color: #ffffff;
+            --plot-bg: #1a1a1a;
+            --plot-paper-bg: #1a1a1a;
+            --grid-color: #444;
+            --border-color: rgba(255, 255, 255, 0.1);
+        }
+        
+        body {
+            background: var(--bg-gradient);
+            min-height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--text-color);
+            transition: all 0.3s ease;
+        }
+        
+        .main-container {
+            background: var(--main-bg);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px var(--border-color);
+            backdrop-filter: blur(10px);
+            margin: 20px;
+            padding: 30px;
+            transition: all 0.3s ease;
+        }
+        
+        .control-panel {
+            background: var(--control-bg);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+            color: white;
+            transition: all 0.3s ease;
+        }
+        
+        .form-control, .form-select {
+            border: none;
+            border-radius: 10px;
+            padding: 12px 15px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(5px);
+        }
+        
+        .form-control:focus, .form-select:focus {
+            box-shadow: 0 0 0 0.2rem rgba(255, 255, 255, 0.25);
+            background: rgba(255, 255, 255, 1);
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #20bf6b 0%, #0fb9b1 100%);
+            border: none;
+            border-radius: 10px;
+            padding: 12px 25px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+        }
+        
+        .plot-container {
+            background: var(--plot-bg);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 10px 30px var(--border-color);
+            min-height: 500px;
+            max-height: 80vh;
+            overflow: hidden;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 50px;
+        }
+        
+        .spinner-border {
+            width: 3rem;
+            height: 3rem;
+        }
+        
+
+        
+        .time-slider {
+            margin: 20px 0;
+        }
+        
+        .time-display {
+            text-align: center;
+            font-size: 1.2em;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        
+        .colorbar-controls {
+            margin: 20px 0;
+        }
+        
+        .axis-controls {
+            margin: 20px 0;
+        }
+        
+        .value-display {
+            text-align: center;
+            font-size: 1em;
+            font-weight: bold;
+            margin: 5px 0;
+        }
+        
+        .range-slider-container {
+            position: relative;
+            margin: 20px 0;
+        }
+        
+        .range-display {
+            text-align: center;
+            font-size: 1em;
+            font-weight: bold;
+            margin: 10px 0;
+            color: white;
+        }
+        
+        /* jQuery UI Slider customization */
+        #slider-range {
+            margin: 10px 0;
+        }
+        
+        .ui-slider-horizontal {
+            height: 8px;
+            background: linear-gradient(to right, #20bf6b 0%, #0fb9b1 50%, #26de81 100%);
+            border: none;
+            border-radius: 4px;
+        }
+        
+        .ui-slider-range {
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+        }
+        
+        .ui-slider-handle {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: white;
+            border: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            cursor: pointer;
+        }
+        
+        .ui-slider-handle:focus {
+            outline: none;
+        }
+        
+        /* X and Z axis slider styling */
+        #x-slider-range, #z-slider-range {
+            margin: 10px 0;
+        }
+        
+        #x-slider-range .ui-slider-horizontal {
+            background: linear-gradient(to right, #20bf6b 0%, #0fb9b1 100%);
+        }
+        
+        #z-slider-range .ui-slider-horizontal {
+            background: linear-gradient(to right, #26de81 0%, #45aaf2 100%);
+        }
+        
+        .vector-section {
+            margin-top: 30px;
+        }
+        
+        .vector-section .control-panel {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+        }
+        
+        .time-series-section {
+            margin-top: 30px;
+        }
+        
+        .time-series-section .control-panel {
+            background: linear-gradient(135deg, #20bf6b 0%, #0fb9b1 100%);
+        }
+        
+        .point-input-group {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 10px;
+        }
+        
+        .point-input-group label {
+            color: white;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .input-group-text {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            font-weight: bold;
+        }
+        
+        .stats-panel {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+        
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="main-container">
+            <h1 class="text-center mb-4">
+                <i class="fas fa-chart-area"></i> HYDROTHERM Postprocessor
+            </h1>
+            
+            <div class="control-panel">
+                <div class="row">
+                    <div class="col-md-3">
+                        <label for="fileInput" class="form-label">
+                            <i class="fas fa-file-upload"></i> Select Scalar File
+                        </label>
+                        <input type="file" class="form-control" id="fileInput" accept="*">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="variableSelect" class="form-label">
+                            <i class="fas fa-layer-group"></i> Scalar Variable
+                        </label>
+                        <select class="form-select" id="variableSelect">
+                            <option value="temperature">Temperature</option>
+                            <option value="pressure">Pressure</option>
+                            <option value="saturation">Saturation</option>
+                            <option value="phase">Phase</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label for="colormapSelect" class="form-label">
+                            <i class="fas fa-palette"></i> Colormap
+                        </label>
+                        <select class="form-select" id="colormapSelect">
+                            <option value="Blackbody">Blackbody</option>
+                            <option value="Bluered">Bluered</option>
+                            <option value="Blues">Blues</option>
+                            <option value="Earth">Earth</option>
+                            <option value="Electric">Electric</option>
+                            <option value="Greens">Greens</option>
+                            <option value="Greys">Greys</option>
+                            <option value="Hot" selected>Hot</option>
+                            <option value="Jet">Jet</option>
+                            <option value="Picnic">Picnic</option>
+                            <option value="Portland">Portland</option>
+                            <option value="Rainbow">Rainbow</option>
+                            <option value="RdBu">RdBu</option>
+                            <option value="Reds">Reds</option>
+                            <option value="Viridis">Viridis</option>
+                            <option value="YlGnBu">YlGnBu</option>
+                            <option value="YlOrRd">YlOrRd</option>
+                        </select>
+                    </div>
+                    <div class="col-md-1">
+                        <label for="themeSelect" class="form-label">
+                            <i class="fas fa-moon"></i> Theme
+                        </label>
+                        <select class="form-select" id="themeSelect">
+                            <option value="light">Light</option>
+                            <option value="dark" selected>Dark</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">
+                            <i class="fas fa-cog"></i> Actions
+                        </label>
+                        <div>
+                            <div class="mb-2">
+                                <label for="gifFrameStep" style="color:white;font-size:0.95em;">Frame Step (downsample):</label>
+                                <input type="number" id="gifFrameStep" min="1" value="1" style="width:60px;">
+                                <label for="gifResolution" style="color:white;font-size:0.95em;margin-left:10px;">Resolution:</label>
+                                <select id="gifResolution" style="width:100px;">
+                                    <option value="900x600">900x600</option>
+                                    <option value="600x400">600x400</option>
+                                    <option value="450x300">450x300</option>
+                                </select>
+                                <span style="color:white;font-size:0.95em;margin-left:10px;">GIF Delay: 5/100s</span>
+                            </div>
+                            <button class="btn btn-primary" onclick="loadAndProcessFile()">
+                                <i class="fas fa-play"></i> Load & Plot
+                            </button>
+                            <button class="btn btn-secondary mt-2" id="exportGifBtn" onclick="exportGifAnimation()">
+                                <i class="fas fa-film"></i> Export GIF Animation
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mt-3">
+                    <div class="col-md-3">
+                        <label for="vectorFileInput" class="form-label">
+                            <i class="fas fa-arrows-alt"></i> Select Vector File (Optional)
+                        </label>
+                        <input type="file" class="form-control" id="vectorFileInput" accept="*">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="vectorTypeSelect" class="form-label">
+                            <i class="fas fa-layer-group"></i> Vector Type
+                        </label>
+                        <select class="form-select" id="vectorTypeSelect">
+                            <option value="water">Water</option>
+                            <option value="steam">Steam</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label for="arrowScaleSlider" class="form-label">
+                            <i class="fas fa-expand-arrows-alt"></i> Arrow Scale
+                        </label>
+                        <input type="range" class="form-range" id="arrowScaleSlider" min="-4" max="2" step="0.1" value="-2">
+                        <div class="value-display" id="arrowScaleDisplay">Scale: 1.0x</div>
+                    </div>
+                    <div class="col-md-3">
+                        <label for="arrowColorSelect" class="form-label">
+                            <i class="fas fa-paint-brush"></i> Arrow Color
+                        </label>
+                        <select class="form-select" id="arrowColorSelect">
+                            <option value="#0066cc">Blue</option>
+                            <option value="#ff6600">Orange</option>
+                            <option value="#e74c3c">Red</option>
+                            <option value="#27ae60">Green</option>
+                            <option value="#000000">Black</option>
+                            <option value="#8e44ad">Purple</option>
+                            <option value="#ffffff" selected>White</option>
+                        </select>
+                        <div class="mt-2">
+                            <button class="btn btn-outline-light" onclick="loadVectorFile()">
+                                <i class="fas fa-upload"></i> Load Vector
+                            </button>
+                            <button class="btn btn-outline-light btn-sm ms-2" onclick="clearVectors()">
+                                <i class="fas fa-trash"></i> Clear
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+
+                
+                <div class="time-slider" id="timeSlider" style="display: none;">
+                    <label for="timeRange" class="form-label">
+                        <i class="fas fa-clock"></i> Time Point
+                    </label>
+                    <input type="range" class="form-range" id="timeRange" min="0" max="100" value="0">
+                    <div class="time-display" id="timeDisplay">Time: 0.00000</div>
+                </div>
+                
+                <div class="colorbar-controls" id="colorbarControls" style="display: none;">
+                    <div class="row">
+                        <div class="col-md-12">
+                            <label for="amount" class="form-label">
+                                <i class="fas fa-palette"></i> Colorbar Range
+                            </label>
+                            <div class="range-slider-container">
+                                <input type="text" id="amount" readonly style="border:0; color:white; font-weight:bold; background:transparent; text-align:center; width:100%; margin-bottom:10px;">
+                                <div id="slider-range"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-12">
+                            <button class="btn btn-sm btn-outline-light" onclick="resetColorbar()">
+                                <i class="fas fa-undo"></i> Reset to Auto Range
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="axis-controls" id="axisControls" style="display: none;">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label for="xRangeAmount" class="form-label">
+                                <i class="fas fa-arrows-alt-h"></i> X-Axis Range
+                            </label>
+                            <div class="range-slider-container">
+                                <input type="text" id="xRangeAmount" readonly style="border:0; color:white; font-weight:bold; background:transparent; text-align:center; width:100%; margin-bottom:10px;">
+                                <div id="x-slider-range"></div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="zRangeAmount" class="form-label">
+                                <i class="fas fa-arrows-alt-v"></i> Z-Axis Range
+                            </label>
+                            <div class="range-slider-container">
+                                <input type="text" id="zRangeAmount" readonly style="border:0; color:white; font-weight:bold; background:transparent; text-align:center; width:100%; margin-bottom:10px;">
+                                <div id="z-slider-range"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-12">
+                            <button class="btn btn-sm btn-outline-light" onclick="resetAxes()">
+                                <i class="fas fa-undo"></i> Reset to Auto Range
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="loading" id="loading">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-3">Processing data file... Please wait.</p>
+            </div>
+            
+            <div class="plot-container" id="plotContainer">
+                <div class="text-center text-muted">
+                    <i class="fas fa-chart-area fa-3x mb-3"></i>
+                    <p>Select a data file and click "Load & Plot" to visualize your scalar data</p>
+                </div>
+            </div>
+            
+
+            
+            <!-- Time Series Plot Section -->
+            <div class="time-series-section" id="timeSeriesSection" style="display: none;">
+                <div class="control-panel">
+                    <h5 class="mb-3">
+                        <i class="fas fa-chart-line"></i> Time Series at Specific Location
+                    </h5>
+                    <div class="row">
+                        <div class="col-md-3">
+                            <label for="timeSeriesVariable" class="form-label">
+                                <i class="fas fa-layer-group"></i> Variable
+                            </label>
+                            <select class="form-select" id="timeSeriesVariable">
+                                <option value="temperature">Temperature</option>
+                                <option value="pressure">Pressure</option>
+                                <option value="saturation">Saturation</option>
+                                <option value="phase">Phase</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">
+                                <i class="fas fa-cog"></i> Actions
+                            </label>
+                            <div>
+                                <button class="btn btn-primary" onclick="plotTimeSeries()">
+                                    <i class="fas fa-play"></i> Plot Time Series
+                                </button>
+                                <button class="btn btn-outline-light btn-sm ms-2" onclick="clearAllPoints()">
+                                    <i class="fas fa-trash"></i> Clear All
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row mt-3">
+                        <div class="col-md-12">
+                            <h6 class="mb-3">Spatial Points (up to 4):</h6>
+                            <div class="row">
+                                <div class="col-md-3">
+                                    <div class="point-input-group">
+                                        <label class="form-label">Point 1</label>
+                                        <div class="input-group mb-2">
+                                            <span class="input-group-text">X</span>
+                                            <input type="number" class="form-control" id="xCoord1" step="0.001" placeholder="0.000">
+                                        </div>
+                                        <div class="input-group">
+                                            <span class="input-group-text">Z</span>
+                                            <input type="number" class="form-control" id="zCoord1" step="0.001" placeholder="0.000">
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="point-input-group">
+                                        <label class="form-label">Point 2</label>
+                                        <div class="input-group mb-2">
+                                            <span class="input-group-text">X</span>
+                                            <input type="number" class="form-control" id="xCoord2" step="0.001" placeholder="0.000">
+                                        </div>
+                                        <div class="input-group">
+                                            <span class="input-group-text">Z</span>
+                                            <input type="number" class="form-control" id="zCoord2" step="0.001" placeholder="0.000">
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="point-input-group">
+                                        <label class="form-label">Point 3</label>
+                                        <div class="input-group mb-2">
+                                            <span class="input-group-text">X</span>
+                                            <input type="number" class="form-control" id="xCoord3" step="0.001" placeholder="0.000">
+                                        </div>
+                                        <div class="input-group">
+                                            <span class="input-group-text">Z</span>
+                                            <input type="number" class="form-control" id="zCoord3" step="0.001" placeholder="0.000">
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="point-input-group">
+                                        <label class="form-label">Point 4</label>
+                                        <div class="input-group mb-2">
+                                            <span class="input-group-text">X</span>
+                                            <input type="number" class="form-control" id="xCoord4" step="0.001" placeholder="0.000">
+                                        </div>
+                                        <div class="input-group">
+                                            <span class="input-group-text">Z</span>
+                                            <input type="number" class="form-control" id="zCoord4" step="0.001" placeholder="0.000">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="plot-container" id="timeSeriesContainer">
+                    <div class="text-center text-muted">
+                        <i class="fas fa-chart-line fa-3x mb-3"></i>
+                        <p>Enter X and Z coordinates and click "Plot Time Series" to see the variable evolution over time</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.js"></script>
+    <script src="https://code.jquery.com/ui/1.14.1/jquery-ui.js"></script>
+    <script src="script.js"></script>
+</body>
+</html> 
