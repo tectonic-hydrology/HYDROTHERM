@@ -1010,12 +1010,19 @@ async function plotData() {
             const mag = Math.sqrt(u * u + v * v);
             if (mag <= 0) return;
 
+            // Use log magnitude but preserve small values
             const logMag = Math.log10(mag + 1e-30);
+
+            // Shift so smallest values are still visible
+            const shiftedMag = logMag + 12;   // assumes typical range ~1e-12 to 1
+
             const ux = u / mag;
             const uy = v / mag;
 
             const scale = Math.pow(10, arrowScale);
-            const length = Math.max(0, logMag) * scale;
+
+            // length always positive
+            const length = Math.max(0.001, shiftedMag) * scale;
 
             if (!isFinite(length) || length <= 0) return;
 
