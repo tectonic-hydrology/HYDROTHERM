@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Scalar Data Visualizer</title>
+    <title>HYDROTHERM Postprocessor</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://code.jquery.com/ui/1.14.1/themes/base/jquery-ui.css">
@@ -239,6 +239,11 @@
             justify-content: space-between;
             margin: 5px 0;
         }
+
+        .helper-note {
+            font-size: 0.92rem;
+            opacity: 0.95;
+        }
     </style>
 </head>
 <body>
@@ -394,8 +399,8 @@
 
                 <div class="row mt-3">
                     <div class="col-md-12">
-                        <div class="form-text text-light">
-                            Heat transport proxy uses built-in pure-water and steam heat-capacity lookup tables based on temperature from Plot_scalar.
+                        <div class="form-text text-light helper-note">
+                            Heat transport proxy uses built-in pure-water and steam heat-capacity lookup tables based on temperature from Plot_scalar. Click the main plot to fill time-series points automatically.
                         </div>
                     </div>
                 </div>
@@ -470,7 +475,8 @@
             <div class="plot-container" id="plotContainer">
                 <div class="text-center text-muted">
                     <i class="fas fa-chart-area fa-3x mb-3"></i>
-                    <p>Select a data file and click "Load & Plot" to visualize your scalar data</p>
+                    <p>Select a scalar file and click "Load & Plot" to visualize scalar or vector-derived data</p>
+                    <p class="mb-0">Optionally load a vector file to overlay flux arrows or plot derived fields.</p>
                 </div>
             </div>
 
@@ -507,7 +513,7 @@
                             </div>
                         </div>
 
-                        <div class="col-md-3">
+                        <div class="col-md-5">
                             <label class="form-label">
                                 <i class="fas fa-cog"></i> Actions
                             </label>
@@ -518,12 +524,15 @@
                                 <button class="btn btn-outline-light btn-sm ms-2" onclick="clearAllPoints()">
                                     <i class="fas fa-trash"></i> Clear All
                                 </button>
+                                <button class="btn btn-outline-light btn-sm ms-2" id="downloadTimeSeriesBtn">
+                                    <i class="fas fa-download"></i> Download CSV
+                                </button>
                             </div>
                         </div>
 
-                        <div class="col-md-6">
+                        <div class="col-md-4">
                             <div class="form-text text-light mt-4">
-                                Heat transport proxy uses built-in pure-water and steam heat-capacity lookup tables based on temperature from Plot_scalar.
+                                You can type coordinates manually or click directly on the main plot to fill Points 1–4.
                             </div>
                         </div>
                     </div>
@@ -595,7 +604,7 @@
                 <div class="plot-container" id="timeSeriesContainer">
                     <div class="text-center text-muted">
                         <i class="fas fa-chart-line fa-3x mb-3"></i>
-                        <p>Enter X and Z coordinates and click "Plot Time Series" to see the variable evolution over time</p>
+                        <p>Enter X and Z coordinates or click the main plot, then click "Plot Time Series"</p>
                     </div>
                 </div>
             </div>
