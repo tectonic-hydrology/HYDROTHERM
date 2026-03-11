@@ -1,82 +1,238 @@
+# HYDROTHERM Postprocessor
+
+Interactive browser-based visualization tool for **HYDROTHERM hydrothermal simulation outputs**.
+
+🌐 **Live application**  
 https://tectonic-hydrology.github.io/HYDROTHERM/
 
-# Scalar Data Visualizer
+This tool allows users to explore **Plot_scalar and Plot_vector outputs directly in a web browser**, without requiring MATLAB, Python, or specialized visualization software.
 
-A modern web application for visualizing large scientific data files with interactive plotting capabilities.
+---
 
-## Features
+# Features
 
-- **File Upload**: Supports HYDROTHERM Plot_scalar and Plot_vector data files
-- **Variable Selection**: Choose from Temperature, Pressure, Saturation, and Phase variables
-- **Colormap Options**: Multiple colormap options including Viridis, Plasma, Inferno, and more
-- **Time Navigation**: Interactive slider to navigate through different time points
-- **Real-time Updates**: Instant visualization updates when changing variables or colormaps
-- **Responsive Design**: Modern, mobile-friendly interface
-- **Large File Support**: Optimized for processing large data files (400k+ lines)
+## Scalar Field Visualization
 
-## How to Use
+Supports HYDROTHERM **Plot_scalar** files.
 
-1. **Open the Application**: Open `index.html` in a modern web browser
-2. **Select Data File**: Click "Choose File" and select your data file
-3. **Choose Variable**: Select the scalar variable you want to visualize from the dropdown
-4. **Pick Colormap**: Choose your preferred colormap from the available options
-5. **Load & Plot**: Click "Load & Plot" to process the file and generate the visualization
-6. **Navigate Time**: Use the slider to move through different time points
-7. **Interact**: Hover over data points for detailed information, use Plotly's built-in tools for zooming and panning
+Available scalar fields:
 
-## Data Format
+- Temperature
+- Pressure
+- Saturation
+- Phase index
 
-The application expects data files with the following structure:
+Interactive features:
 
-- Columns: x, y, z, time, temperature, pressure, saturation, phase
-- Scientific notation support (e.g., 1.250000E-02)
-- Header lines are automatically detected and skipped
-- Large files are processed efficiently using streaming techniques
+- dynamic colorbar scaling
+- adjustable colormap
+- zoom and pan
+- time slider navigation
+- automatic grid reconstruction
 
-## Keyboard Navigation
+---
 
-- **Left Arrow**: Previous time point
-- **Right Arrow**: Next time point
+# Vector Field Visualization
 
-## Technical Details
+Supports HYDROTHERM **Plot_vector** files.
 
-- **Frontend**: HTML5, CSS3, JavaScript (ES6+)
-- **Visualization**: Plotly.js for interactive plotting
-- **Styling**: Bootstrap 5 with custom gradients and animations
-- **File Processing**: Client-side parsing with error handling
-- **Performance**: Optimized for large datasets with efficient data structures
+Vector arrows can display:
 
-## Browser Compatibility
+- **Water mass flux**
+- **Steam mass flux**
+- **Total mass flux (water + steam)**
+
+Arrows are plotted as vector overlays on scalar fields.
+
+Vector display controls include:
+
+- adjustable arrow scaling
+- arrow color selection
+- optional vector file loading
+- independent scalar/vector visualization
+
+---
+
+# Derived Fields
+
+The application can compute additional fields from vector data.
+
+Derived quantities include:
+
+### Water Mass Flux Magnitude
+
+Magnitude of the water phase mass-flux vector.
+
+### Steam Mass Flux Magnitude
+
+Magnitude of the steam phase mass-flux vector.
+
+### Total Mass Flux Magnitude
+
+\[
+|F_{total}| = |F_{water}| + |F_{steam}|
+\]
+
+This approximates the total fluid transport magnitude.
+
+---
+
+# Advective Heat Transport Proxy
+
+The viewer can compute a **heat transport proxy** based on phase fluxes and temperature.
+
+\[
+Q = (\dot{m}_w c_{p,w} + \dot{m}_s c_{p,s}) T
+\]
+
+where
+
+- $\dot{m}_w$ = water mass flux  
+- $\dot{m}_s$ = steam mass flux  
+- $c_{p,w}$ = water heat capacity  
+- $c_{p,s}$ = steam heat capacity  
+- $T$ = temperature  
+
+Heat capacities are automatically obtained from **built-in lookup tables for pure water and steam** based on temperature from the scalar file.
+
+This provides a rapid visualization of **regions of strong advective heat transport** in geothermal systems.
+
+---
+
+# Time Series Extraction
+
+Users can extract time series at specific spatial locations.
+
+Features include:
+
+- up to **4 spatial points simultaneously**
+- plots variable evolution through time
+- works with scalar or derived vector fields
+
+Points can be selected by:
+
+- entering coordinates manually
+- **clicking directly on the main plot**
+
+---
+
+# Data Export
+
+Time series can be exported as **CSV files** for further analysis.
+
+Exported files include:
+
+- time
+- variable values
+- coordinates of sampled points
+
+---
+
+# Animation Export
+
+The application can export **GIF animations** of time evolution.
+
+Options include:
+
+- frame downsampling
+- resolution selection
+- animated scalar field evolution
+
+This allows rapid creation of figures for presentations or papers.
+
+---
+
+# Data Format
+
+The viewer expects HYDROTHERM output formats.
+
+## Scalar File Format (Plot_scalar)
+
+Columns:
+x,y,z km
+time yr
+temperature °C
+pressure bar
+saturation fraction
+phase integer
+
+
+---
+
+# How to Use
+
+1. Open the application  
+2. Load a **Plot_scalar file**
+3. Click **Load & Plot**
+4. Use the **time slider** to explore simulation evolution
+5. Optionally load a **Plot_vector file** to display flux arrows
+6. Choose scalar or derived fields from the dropdown
+7. Click the plot to select points for time-series analysis
+8. Export time series or GIF animations as needed
+
+---
+
+# Technical Details
+
+Frontend stack:
+
+- HTML5
+- CSS3
+- JavaScript (ES6)
+- Plotly.js
+- Bootstrap 5
+- jQuery UI sliders
+
+Processing is performed **entirely in the browser**, so no server is required.
+
+---
+
+# Performance
+
+The viewer is optimized for large HYDROTHERM outputs.
+
+Typical capabilities:
+
+- 400k+ line files
+- fast time slicing
+- efficient memory usage
+- responsive interactive plotting
+
+---
+
+# Browser Compatibility
+
+Supported browsers:
 
 - Chrome 80+
 - Firefox 75+
 - Safari 13+
 - Edge 80+
 
-## File Size Considerations
+Modern WebGL-capable browsers are recommended.
 
-The application is designed to handle large files efficiently:
+---
 
-- Files up to several hundred MB can be processed
-- Memory usage is optimized for large datasets
-- Progress indicators show processing status
-- Error handling for malformed data
+# Branch Information
 
-## Troubleshooting
+The enhanced visualization features are implemented in the branch:HYRROTHERM_MW
 
-- **File not loading**: Ensure the file format is supported (.h13d18, .mid12, .noig)
-- **No data displayed**: Check that the file contains valid numeric data in the expected format
-- **Slow performance**: Large files may take time to process; wait for the loading indicator to complete
-- **Browser issues**: Try refreshing the page or using a different browser
 
-## Example Data Structure
+Major additions in this branch include:
 
-```
-x (km)    y (km)    z (km)    time (yr)    temp (°C)    pressure (Pa)    saturation    phase
-1.250E-02 0.500000  0.250000  0.00000      1100.00      7.000000E+08     -1.00000      4
-2.600E-02 0.500000  0.250000  0.00000      254.139      4.188769E+08     0.500000      1
-```
+- vector visualization
+- derived fields
+- heat transport proxy
+- Cp lookup tables
+- time-series extraction
+- CSV export
+- GIF animation export
+- interactive point selection
 
-## License
+---
 
-This application is provided as-is for educational and research purposes. 
+# License
+
+This tool is provided for **research and educational use**.
+
+Developed for visualization of HYDROTHERM geothermal simulation outputs.
