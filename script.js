@@ -24,7 +24,8 @@ const DERIVED_VECTOR_FIELDS = [
     'water_flux_mag',
     'steam_flux_mag',
     'total_flux_mag',
-    'heat_flux_proxy'
+    'heat_flux_proxy',
+    'heat_flux_total'
 ];
 
 const POINT_COLORS = ['#20bf6b', '#0fb9b1', '#26de81', '#45aaf2'];
@@ -137,7 +138,53 @@ function getVectorComponentsForPlot(row, type) {
     return { u: row.xw, w: row.zw };
 }
 
+function computeTypicalCellAreaM2FromVectorRows(vectorRows) {
+    if (!vectorRows || vectorRows.length === 0) return 1.0;
+
+    const xVals = [...new Set(vectorRows.map(r => r.x))].sort((a, b) => a - b);
+    const zVals = [...new Set(vectorRows.map(r => r.z))].sort((a, b) => a - b);
+
+    let dxKm = null;
+    let dzKm = null;
+
+    for (let i = 1; i < xVals.length; i++) {
+        const d = Math.abs(xVals[i] - xVals[i - 1]);
+        if (d > 0) {
+            dxKm = d;
+            break;
+        }
+    }
+
+    for (let i = 1; i < zVals.length; i++) {
+        const d = Math.abs(zVals[i] - zVals[i - 1]);
+        if (d > 0) {
+            dzKm = d;
+            break;
+        }
+    }
+
+    if (dxKm === null || dzKm === null) return 1.0;
+
+    const dxM = dxKm * 1000.0;
+    const dzM = dzKm * 1000.0;
+
+    return dxM * dzM;
+}
+
+function computeHeatFluxDensityWm2(waterMag, steamMag, tempC) {
+    const waterFluxSI = waterMag * 10.0; // g/s/cm^2 -> kg/s/m^2
+    const steamFluxSI = steamMag * 10.0;
+
+    const cpWater = getWaterCp(tempC);
+    const cpSteam = getSteamCp(tempC);
+    const tempK = tempC + 273.15;
+
+    return (waterFluxSI * cpWater * tempK) + (steamFluxSI * cpSteam * tempK);
+}
+
 function deriveVectorField(vectorRows, fieldName, tempLookup = null) {
+    const cellAreaM2 = computeTypicalCellAreaM2FromVectorRows(vectorRows);
+
     return vectorRows.map(row => {
         const waterMag = mag3(row.xw, row.yw, row.zw);
         const steamMag = mag3(row.xs, row.ys, row.zs);
@@ -151,21 +198,18 @@ function deriveVectorField(vectorRows, fieldName, tempLookup = null) {
             value = steamMag;
         } else if (fieldName === 'total_flux_mag') {
             value = totalMag;
-        } else if (fieldName === 'heat_flux_proxy') {
+        } else if (fieldName === 'heat_flux_proxy' || fieldName === 'heat_flux_total') {
             const key = `${row.x}|${row.z}`;
             const tempC = tempLookup ? tempLookup.get(key) : undefined;
 
             if (tempC !== undefined && !isNaN(tempC)) {
-                // vector magnitudes assumed in g/s/cm^2
-                // convert to kg/s/m^2: multiply by 10
-                const waterFluxSI = waterMag * 10.0;
-                const steamFluxSI = steamMag * 10.0;
+                const heatFluxDensityWm2 = computeHeatFluxDensityWm2(waterMag, steamMag, tempC);
 
-                const cpWater = getWaterCp(tempC);
-                const cpSteam = getSteamCp(tempC);
-                const tempK = tempC + 273.15;
-
-                value = (waterFluxSI * cpWater * tempK) + (steamFluxSI * cpSteam * tempK);
+                if (fieldName === 'heat_flux_proxy') {
+                    value = heatFluxDensityWm2 * 1000.0; // mW/m^2
+                } else {
+                    value = (heatFluxDensityWm2 * cellAreaM2) / 1.0e6; // MW
+                }
             }
         }
 
@@ -215,7 +259,7 @@ function findClosestVectorPoint(vectorRows, x, z) {
     return { closestPoint, minDistance };
 }
 
-function computeDerivedValueAtPoint(fieldName, vectorPoint, scalarPoint) {
+function computeDerivedValueAtPoint(fieldName, vectorPoint, scalarPoint, cellAreaM2 = 1.0) {
     if (!vectorPoint) return NaN;
 
     const waterMag = mag3(vectorPoint.xw, vectorPoint.yw, vectorPoint.zw);
@@ -226,18 +270,17 @@ function computeDerivedValueAtPoint(fieldName, vectorPoint, scalarPoint) {
     if (fieldName === 'steam_flux_mag') return steamMag;
     if (fieldName === 'total_flux_mag') return totalMag;
 
-    if (fieldName === 'heat_flux_proxy') {
+    if (fieldName === 'heat_flux_proxy' || fieldName === 'heat_flux_total') {
         if (!scalarPoint) return NaN;
+
         const tempC = scalarPoint.temperature;
-        const tempK = tempC + 273.15;
+        const heatFluxDensityWm2 = computeHeatFluxDensityWm2(waterMag, steamMag, tempC);
 
-        const waterFluxSI = waterMag * 10.0;
-        const steamFluxSI = steamMag * 10.0;
+        if (fieldName === 'heat_flux_proxy') {
+            return heatFluxDensityWm2 * 1000.0; // mW/m^2
+        }
 
-        const cpWater = getWaterCp(tempC);
-        const cpSteam = getSteamCp(tempC);
-
-        return (waterFluxSI * cpWater * tempK) + (steamFluxSI * cpSteam * tempK);
+        return (heatFluxDensityWm2 * cellAreaM2) / 1.0e6; // MW
     }
 
     return NaN;
@@ -1014,7 +1057,7 @@ async function plotData() {
             const logMag = Math.log10(mag + 1e-30);
 
             // Shift so smallest values are still visible
-            const shiftedMag = logMag + 12;   // assumes typical range ~1e-12 to 1
+            const shiftedMag = logMag + 12; // assumes typical range ~1e-12 to 1
 
             const ux = u / mag;
             const uy = v / mag;
@@ -1195,7 +1238,8 @@ function getVariableLabel(variable) {
         water_flux_mag: 'Water mass-flux magnitude (g/s/cm²)',
         steam_flux_mag: 'Steam mass-flux magnitude (g/s/cm²)',
         total_flux_mag: 'Total mass-flux magnitude (g/s/cm²)',
-        heat_flux_proxy: 'Heat transport proxy (W/m²)'
+        heat_flux_proxy: 'Heat flux density (mW/m²)',
+        heat_flux_total: 'Total heat transport (MW)'
     };
     return labels[variable] || variable;
 }
@@ -1206,7 +1250,9 @@ function formatValue(value, variable) {
     } else if (variable === 'temperature') {
         return `${value.toFixed(1)} °C`;
     } else if (variable === 'heat_flux_proxy') {
-        return `${value.toExponential(3)} W/m²`;
+        return `${value.toExponential(3)} mW/m²`;
+    } else if (variable === 'heat_flux_total') {
+        return `${value.toExponential(3)} MW`;
     } else {
         return value.toFixed(3);
     }
@@ -1304,6 +1350,7 @@ function plotTimeSeries() {
 
     for (const point of points) {
         const timeSeriesData = [];
+        const cellAreaM2 = vectorFileText ? computeTypicalCellAreaM2FromVectorRows(vectorData || []) : 1.0;
 
         for (const time of timePoints) {
             const scalarTimeData = parseTimeStepData(fileText, time);
@@ -1321,10 +1368,13 @@ function plotTimeSeries() {
                 const vectorResult = findClosestVectorPoint(vectorTimeData, point.x, point.z);
                 if (!vectorResult.closestPoint || vectorResult.minDistance >= 0.1) continue;
 
+                const localCellAreaM2 = computeTypicalCellAreaM2FromVectorRows(vectorTimeData) || cellAreaM2;
+
                 value = computeDerivedValueAtPoint(
                     selectedVariable,
                     vectorResult.closestPoint,
-                    scalarResult.closestPoint
+                    scalarResult.closestPoint,
+                    localCellAreaM2
                 );
             } else {
                 value = scalarResult.closestPoint[selectedVariable];
@@ -1492,10 +1542,15 @@ function downloadTimeSeriesCSV() {
                         : { closestPoint: null };
 
                     if (vectorResult.closestPoint) {
+                        const localCellAreaM2 = vectorTimeData
+                            ? computeTypicalCellAreaM2FromVectorRows(vectorTimeData)
+                            : 1.0;
+
                         value = computeDerivedValueAtPoint(
                             selectedVariable,
                             vectorResult.closestPoint,
-                            scalarResult.closestPoint
+                            scalarResult.closestPoint,
+                            localCellAreaM2
                         );
                     }
                 } else {
