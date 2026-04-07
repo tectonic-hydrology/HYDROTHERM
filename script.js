@@ -1225,106 +1225,115 @@ function setupPlotClickSelection() {
     });
 }
 // ============================================================
-// PRINT 6 TSTEP CONVERTER
-// Replaces the numeric line immediately following each "# PRINT 6"
-// header with:
-//      tstep     tstep     6     0
-// while preserving the rest of the file exactly as much as possible.
+// PRINT 6 TSTEP CONVERTER (FIXED + ROBUST)
 // ============================================================
 
 let convertedPrint6Text = null;
 let convertedPrint6Filename = "converted_hydrotherm_input.txt";
 
 function formatPrint6Line(tstep) {
-  // Keep a fixed-width style similar to HYDROTHERM input formatting.
-  // This yields something like:
-  //      10     10     6     0
-  return `${String(tstep).padStart(6)}${String(tstep).padStart(7)}${"6".padStart(6)}${"0".padStart(6)}`;
+    return `     ${tstep}     ${tstep}     6     0`;
+}
+
+function detectNewline(text) {
+    return text.includes("\r\n") ? "\r\n" : "\n";
 }
 
 function convertPrint6Blocks(text, tstep) {
-  const lines = text.split(/\r?\n/);
-  let replacements = 0;
+    const newline = detectNewline(text);
+    const lines = text.split(/\r?\n/);
+    let replacements = 0;
 
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim() === "# PRINT 6") {
-      // We expect:
-      // line i     -> # PRINT 6
-      // line i + 1 -> comment explaining fields
-      // line i + 2 -> numeric record to replace
-      if (i + 2 < lines.length) {
-        lines[i + 2] = formatPrint6Line(tstep);
-        replacements += 1;
-      }
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].trim() === "# PRINT 6" && i + 2 < lines.length) {
+            lines[i + 2] = formatPrint6Line(tstep);
+            replacements += 1;
+        }
     }
-  }
 
-  return {
-    text: lines.join("\n"),
-    replacements
-  };
+    return {
+        text: lines.join(newline),
+        replacements
+    };
 }
 
 function updateConverterStatus(message) {
-  const el = document.getElementById("converterStatus");
-  if (el) el.textContent = message;
+    const el = document.getElementById("converterStatus");
+    if (el) el.textContent = message;
 }
 
-document.getElementById("convertPrint6Btn").addEventListener("click", async () => {
-  const fileInput = document.getElementById("converterFile");
-  const tstepInput = document.getElementById("tstepInput");
-  const downloadBtn = document.getElementById("downloadConvertedBtn");
+function initializePrint6Converter() {
+    const fileInput = document.getElementById("converterFile");
+    const tstepInput = document.getElementById("tstepInput");
+    const convertBtn = document.getElementById("convertPrint6Btn");
+    const downloadBtn = document.getElementById("downloadConvertedBtn");
 
-  if (!fileInput.files || fileInput.files.length === 0) {
-    updateConverterStatus("Please choose a HYDROTHERM input file first.");
-    return;
-  }
+    // If the HTML panel isn't present, just skip silently
+    if (!fileInput || !tstepInput || !convertBtn || !downloadBtn) return;
 
-  const tstep = parseInt(tstepInput.value, 10);
-  if (!Number.isInteger(tstep) || tstep < 0) {
-    updateConverterStatus("Please enter a valid non-negative integer for tstep.");
-    return;
-  }
+    convertBtn.addEventListener("click", async () => {
+        try {
+            if (!fileInput.files || fileInput.files.length === 0) {
+                updateConverterStatus("Please choose a HYDROTHERM input file first.");
+                return;
+            }
 
-  const file = fileInput.files[0];
-  const originalText = await file.text();
+            const tstep = parseInt(tstepInput.value, 10);
+            if (!Number.isInteger(tstep) || tstep < 0) {
+                updateConverterStatus("Please enter a valid non-negative integer for tstep.");
+                return;
+            }
 
-  const result = convertPrint6Blocks(originalText, tstep);
-  convertedPrint6Text = result.text;
+            const file = fileInput.files[0];
+            const originalText = await file.text();
 
-  const dotIndex = file.name.lastIndexOf(".");
-  if (dotIndex > 0) {
-    convertedPrint6Filename =
-      file.name.slice(0, dotIndex) + `_print6_tstep_${tstep}` + file.name.slice(dotIndex);
-  } else {
-    convertedPrint6Filename = file.name + `_print6_tstep_${tstep}.txt`;
-  }
+            const result = convertPrint6Blocks(originalText, tstep);
+            convertedPrint6Text = result.text;
 
-  downloadBtn.disabled = !convertedPrint6Text;
+            const dotIndex = file.name.lastIndexOf(".");
+            if (dotIndex > 0) {
+                convertedPrint6Filename =
+                    file.name.slice(0, dotIndex) + `_print6_tstep_${tstep}` + file.name.slice(dotIndex);
+            } else {
+                convertedPrint6Filename = file.name + `_print6_tstep_${tstep}.txt`;
+            }
 
-  updateConverterStatus(
-    `Converted ${result.replacements} PRINT 6 block(s).\n` +
-    `New value inserted in each PRINT 6 block:\n` +
-    `${formatPrint6Line(tstep)}\n\n` +
-    `Ready to download: ${convertedPrint6Filename}`
-  );
-});
+            downloadBtn.disabled = false;
 
-document.getElementById("downloadConvertedBtn").addEventListener("click", () => {
-  if (!convertedPrint6Text) return;
+            updateConverterStatus(
+                `Converted ${result.replacements} PRINT 6 block(s).\n` +
+                `Inserted line:\n${formatPrint6Line(tstep)}\n\n` +
+                `Ready to download: ${convertedPrint6Filename}`
+            );
 
-  const blob = new Blob([convertedPrint6Text], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
+        } catch (err) {
+            console.error(err);
+            updateConverterStatus(`Conversion failed: ${err.message}`);
+        }
+    });
 
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = convertedPrint6Filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+    downloadBtn.addEventListener("click", () => {
+        if (!convertedPrint6Text) {
+            updateConverterStatus("No converted file is available yet.");
+            return;
+        }
 
-  URL.revokeObjectURL(url);
-});
+        const blob = new Blob([convertedPrint6Text], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = convertedPrint6Filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        URL.revokeObjectURL(url);
+    });
+}
+
+// 🔑 THIS IS THE CRITICAL FIX
+document.addEventListener("DOMContentLoaded", initializePrint6Converter);
 
 // ============================================================
 // Labels / formatting
