@@ -1244,10 +1244,52 @@ function convertPrint6Blocks(text, tstep) {
     const lines = text.split(/\r?\n/);
     let replacements = 0;
 
-    for (let i = 0; i < lines.length; i++) {
+    let i = 0;
+    while (i < lines.length) {
         if (lines[i].trim() === "# PRINT 6" && i + 2 < lines.length) {
+            // Replace the numeric PRINT 6 line
             lines[i + 2] = formatPrint6Line(tstep);
             replacements += 1;
+
+            // Now check for slice lines to remove
+            // Pattern:
+            // line i+3 -> "1"
+            // line i+4 -> "10 1 10"
+            // BUT we do this robustly (not assuming exact numbers)
+
+            let removeStart = i + 3;
+
+            // Remove any lines that look like:
+            // - a single integer (e.g., "1")
+            // - or space-separated integers (e.g., "10 1 10")
+            // Stop when we hit a comment or blank or keyword
+
+            while (removeStart < lines.length) {
+                const testLine = lines[removeStart].trim();
+
+                // Stop if we hit a comment or section divider
+                if (
+                    testLine.startsWith("#") ||
+                    testLine === "" ||
+                    testLine.toUpperCase().includes("PRINT")
+                ) {
+                    break;
+                }
+
+                // Check if line is purely integers (slice block)
+                const isNumericLine = /^[-+]?\d+(\s+[-+]?\d+)*$/.test(testLine);
+
+                if (isNumericLine) {
+                    lines.splice(removeStart, 1); // delete line
+                } else {
+                    break;
+                }
+            }
+
+            // Move forward past this block safely
+            i = removeStart;
+        } else {
+            i++;
         }
     }
 
