@@ -1225,33 +1225,43 @@ function setupPlotClickSelection() {
     });
 }
 function convertPrint6Blocks(text, tstep) {
-    const newLine = text.includes("\r\n") ? "\r\n" : "\n";
+    // Preserve original newline style exactly
+    const newline = text.includes("\r\n") ? "\r\n" : "\n";
 
-    // Match each PRINT 6 block:
-    //   # PRINT 6
-    //   comment line
-    //   numeric line
-    // and optionally:
-    //   1
-    //   10 1 10
-    // only when those are immediately followed by # ---------------------------------
-    //
-    // Important:
-    // - preserves all other spacing in the file
-    // - does NOT touch the initial PRINT 6 block that is followed by # SLICE number
-    // - only removes the two numeric lines in transient sections
+    // Normalize only for pattern matching, then restore newline style at end
+    const normalized = text.replace(/\r\n/g, "\n");
 
-    const pattern = /(# PRINT 6\r?\n# \.\. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type\[I\],time_series_pr_intrv\r?\n)[^\r\n]*(\r?\n)(?:[ \t]*1[ \t]*\r?\n[ \t]*10[ \t]+1[ \t]+10[ \t]*\r?\n(?=# ---------------------------------))?/g;
+    const print6Header =
+        "# PRINT 6\n" +
+        "# .. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type[I],time_series_pr_intrv\n";
+
+    const replacementLine = `     ${tstep}     ${tstep}     6     0\n`;
 
     let replacements = 0;
 
-    const updated = text.replace(pattern, (match, header, nl) => {
-        replacements += 1;
-        return header + `     ${tstep}     ${tstep}     6     0` + nl;
-    });
+    // Step 1: replace every PRINT 6 numeric line only
+    let updated = normalized.replace(
+        /(# PRINT 6\n# \.\. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type\[I\],time_series_pr_intrv\n)[^\n]*\n/g,
+        () => {
+            replacements += 1;
+            return print6Header + replacementLine;
+        }
+    );
+
+    // Step 2: remove ONLY the transient extra two-line block:
+    //   1
+    //   10 1 10
+    // when it appears immediately before "# ---------------------------------"
+    //
+    // This will NOT touch the initial block because that one is followed by
+    // "# SLICE number", not "# ---------------------------------".
+    updated = updated.replace(
+        /\n1\n10 1 10\n(?=# ---------------------------------)/g,
+        "\n"
+    );
 
     return {
-        text: updated,
+        text: updated.replace(/\n/g, newline),
         replacements
     };
 }
