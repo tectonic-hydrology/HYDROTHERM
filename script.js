@@ -1225,43 +1225,21 @@ function setupPlotClickSelection() {
     });
 }
 function convertPrint6Blocks(text, tstep) {
-    // Preserve original newline style exactly
-    const newline = text.includes("\r\n") ? "\r\n" : "\n";
-
-    // Normalize only for pattern matching, then restore newline style at end
-    const normalized = text.replace(/\r\n/g, "\n");
-
-    const print6Header =
-        "# PRINT 6\n" +
-        "# .. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type[I],time_series_pr_intrv\n";
-
-    const replacementLine = `     ${tstep}     ${tstep}     6     0\n`;
-
     let replacements = 0;
 
-    // Step 1: replace every PRINT 6 numeric line only
-    let updated = normalized.replace(
-        /(# PRINT 6\n# \.\. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type\[I\],time_series_pr_intrv\n)[^\n]*\n/g,
-        () => {
+    const updated = text.replace(
+        /(# PRINT 6\r?\n)(#[^\r\n]*\r?\n)([^\r\n]*)(\r?\n)(?:1\r?\n10 1 10(\r?\n)(?=# ---------------------------------))?/g,
+        (match, line1, line2, oldNumericLine, nlAfterNumeric, nlAfter10110) => {
             replacements += 1;
-            return print6Header + replacementLine;
+
+            // Keep the original header/comment lines exactly as they were.
+            // Replace only the numeric PRINT 6 line.
+            return line1 + line2 + `     ${tstep}     ${tstep}     6     0` + nlAfterNumeric;
         }
     );
 
-    // Step 2: remove ONLY the transient extra two-line block:
-    //   1
-    //   10 1 10
-    // when it appears immediately before "# ---------------------------------"
-    //
-    // This will NOT touch the initial block because that one is followed by
-    // "# SLICE number", not "# ---------------------------------".
-    updated = updated.replace(
-        /\n1\n10 1 10\n(?=# ---------------------------------)/g,
-        "\n"
-    );
-
     return {
-        text: updated.replace(/\n/g, newline),
+        text: updated,
         replacements
     };
 }
