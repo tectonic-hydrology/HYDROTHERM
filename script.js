@@ -1224,158 +1224,37 @@ function setupPlotClickSelection() {
         plotData();
     });
 }
-// ============================================================
-// PRINT 6 TSTEP CONVERTER (FIXED + ROBUST)
-// ============================================================
-
-let convertedPrint6Text = null;
-let convertedPrint6Filename = "converted_hydrotherm_input.txt";
-
-function formatPrint6Line(tstep) {
-    return `     ${tstep}     ${tstep}     6     0`;
-}
-
-function detectNewline(text) {
-    return text.includes("\r\n") ? "\r\n" : "\n";
-}
-
 function convertPrint6Blocks(text, tstep) {
-    const newline = detectNewline(text);
-    const lines = text.split(/\r?\n/);
+    const newLine = text.includes("\r\n") ? "\r\n" : "\n";
+
+    // Match each PRINT 6 block:
+    //   # PRINT 6
+    //   comment line
+    //   numeric line
+    // and optionally:
+    //   1
+    //   10 1 10
+    // only when those are immediately followed by # ---------------------------------
+    //
+    // Important:
+    // - preserves all other spacing in the file
+    // - does NOT touch the initial PRINT 6 block that is followed by # SLICE number
+    // - only removes the two numeric lines in transient sections
+
+    const pattern = /(# PRINT 6\r?\n# \.\. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type\[I\],time_series_pr_intrv\r?\n)[^\r\n]*(\r?\n)(?:[ \t]*1[ \t]*\r?\n[ \t]*10[ \t]+1[ \t]+10[ \t]*\r?\n(?=# ---------------------------------))?/g;
+
     let replacements = 0;
 
-    let i = 0;
-    while (i < lines.length) {
-        if (lines[i].trim() === "# PRINT 6" && i + 2 < lines.length) {
-            // Replace the numeric PRINT 6 line
-            lines[i + 2] = formatPrint6Line(tstep);
-            replacements += 1;
-
-            // Now check for slice lines to remove
-            // Pattern:
-            // line i+3 -> "1"
-            // line i+4 -> "10 1 10"
-            // BUT we do this robustly (not assuming exact numbers)
-
-            let removeStart = i + 3;
-
-            // Remove any lines that look like:
-            // - a single integer (e.g., "1")
-            // - or space-separated integers (e.g., "10 1 10")
-            // Stop when we hit a comment or blank or keyword
-
-            while (removeStart < lines.length) {
-                const testLine = lines[removeStart].trim();
-
-                // Stop if we hit a comment or section divider
-                if (
-                    testLine.startsWith("#") ||
-                    testLine === "" ||
-                    testLine.toUpperCase().includes("PRINT")
-                ) {
-                    break;
-                }
-
-                // Check if line is purely integers (slice block)
-                const isNumericLine = /^[-+]?\d+(\s+[-+]?\d+)*$/.test(testLine);
-
-                if (isNumericLine) {
-                    lines.splice(removeStart, 1); // delete line
-                } else {
-                    break;
-                }
-            }
-
-            // Move forward past this block safely
-            i = removeStart;
-        } else {
-            i++;
-        }
-    }
+    const updated = text.replace(pattern, (match, header, nl) => {
+        replacements += 1;
+        return header + `     ${tstep}     ${tstep}     6     0` + nl;
+    });
 
     return {
-        text: lines.join(newline),
+        text: updated,
         replacements
     };
 }
-
-function updateConverterStatus(message) {
-    const el = document.getElementById("converterStatus");
-    if (el) el.textContent = message;
-}
-
-function initializePrint6Converter() {
-    const fileInput = document.getElementById("converterFile");
-    const tstepInput = document.getElementById("tstepInput");
-    const convertBtn = document.getElementById("convertPrint6Btn");
-    const downloadBtn = document.getElementById("downloadConvertedBtn");
-
-    // If the HTML panel isn't present, just skip silently
-    if (!fileInput || !tstepInput || !convertBtn || !downloadBtn) return;
-
-    convertBtn.addEventListener("click", async () => {
-        try {
-            if (!fileInput.files || fileInput.files.length === 0) {
-                updateConverterStatus("Please choose a HYDROTHERM input file first.");
-                return;
-            }
-
-            const tstep = parseInt(tstepInput.value, 10);
-            if (!Number.isInteger(tstep) || tstep < 0) {
-                updateConverterStatus("Please enter a valid non-negative integer for tstep.");
-                return;
-            }
-
-            const file = fileInput.files[0];
-            const originalText = await file.text();
-
-            const result = convertPrint6Blocks(originalText, tstep);
-            convertedPrint6Text = result.text;
-
-            const dotIndex = file.name.lastIndexOf(".");
-            if (dotIndex > 0) {
-                convertedPrint6Filename =
-                    file.name.slice(0, dotIndex) + `_print6_tstep_${tstep}` + file.name.slice(dotIndex);
-            } else {
-                convertedPrint6Filename = file.name + `_print6_tstep_${tstep}.txt`;
-            }
-
-            downloadBtn.disabled = false;
-
-            updateConverterStatus(
-                `Converted ${result.replacements} PRINT 6 block(s).\n` +
-                `Inserted line:\n${formatPrint6Line(tstep)}\n\n` +
-                `Ready to download: ${convertedPrint6Filename}`
-            );
-
-        } catch (err) {
-            console.error(err);
-            updateConverterStatus(`Conversion failed: ${err.message}`);
-        }
-    });
-
-    downloadBtn.addEventListener("click", () => {
-        if (!convertedPrint6Text) {
-            updateConverterStatus("No converted file is available yet.");
-            return;
-        }
-
-        const blob = new Blob([convertedPrint6Text], { type: "text/plain;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = convertedPrint6Filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-
-        URL.revokeObjectURL(url);
-    });
-}
-
-// 🔑 THIS IS THE CRITICAL FIX
-document.addEventListener("DOMContentLoaded", initializePrint6Converter);
 
 // ============================================================
 // Labels / formatting
