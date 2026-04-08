@@ -1224,27 +1224,6 @@ function setupPlotClickSelection() {
         plotData();
     });
 }
-// ============================================================
-// PRINT 6 TSTEP CONVERTER (PRESERVE FORMAT + REMOVE EXTRA LINES)
-// ============================================================
-
-let convertedPrint6Text = null;
-let convertedPrint6Filename = "converted_hydrotherm_input.txt";
-
-function formatPrint6Line(tstep) {
-    return `     ${tstep}     ${tstep}     6     0`;
-}
-
-function detectNewline(text) {
-    return text.includes("\r\n") ? "\r\n" : "\n";
-}
-
-function isNumericOnlyLine(line) {
-    const trimmed = line.trim();
-    if (!trimmed) return false;
-    return /^[0-9+\-.\s]+$/.test(trimmed);
-}
-
 function convertPrint6Blocks(text, tstep) {
     const newline = detectNewline(text);
     const lines = text.split(/\r?\n/);
@@ -1252,18 +1231,26 @@ function convertPrint6Blocks(text, tstep) {
 
     for (let i = 0; i < lines.length; i++) {
         if (lines[i].trim() === "# PRINT 6" && i + 2 < lines.length) {
-            // Replace the PRINT 6 values line
+            // Replace the numeric PRINT 6 record
             lines[i + 2] = formatPrint6Line(tstep);
             replacements += 1;
 
-            // Remove trailing numeric-only lines immediately after the values line,
-            // e.g.:
-            // 1
-            // 10 1 10
+            // Remove optional lines immediately after the PRINT 6 numeric line:
+            //    1
+            //    10 1 10
             //
-            // but stop as soon as we hit a comment/header/non-numeric line.
+            // Only remove them if they occur right here, so we do not disturb
+            // anything else in the file structure.
             let j = i + 3;
-            while (j < lines.length && isNumericOnlyLine(lines[j])) {
+
+            if (j < lines.length && lines[j].trim() === "1") {
+                lines.splice(j, 1);
+            }
+
+            if (
+                j < lines.length &&
+                /^\d+\s+\d+\s+\d+$/.test(lines[j].trim())
+            ) {
                 lines.splice(j, 1);
             }
         }
@@ -1274,82 +1261,6 @@ function convertPrint6Blocks(text, tstep) {
         replacements
     };
 }
-
-function updateConverterStatus(message) {
-    const el = document.getElementById("converterStatus");
-    if (el) el.textContent = message;
-}
-
-function initializePrint6Converter() {
-    const fileInput = document.getElementById("converterFile");
-    const tstepInput = document.getElementById("tstepInput");
-    const convertBtn = document.getElementById("convertPrint6Btn");
-    const downloadBtn = document.getElementById("downloadConvertedBtn");
-
-    if (!fileInput || !tstepInput || !convertBtn || !downloadBtn) return;
-
-    convertBtn.addEventListener("click", async () => {
-        try {
-            if (!fileInput.files || fileInput.files.length === 0) {
-                updateConverterStatus("Please choose a HYDROTHERM input file first.");
-                return;
-            }
-
-            const tstep = parseInt(tstepInput.value, 10);
-            if (!Number.isInteger(tstep) || tstep < 0) {
-                updateConverterStatus("Please enter a valid non-negative integer for tstep.");
-                return;
-            }
-
-            const file = fileInput.files[0];
-            const originalText = await file.text();
-
-            const result = convertPrint6Blocks(originalText, tstep);
-            convertedPrint6Text = result.text;
-
-            const dotIndex = file.name.lastIndexOf(".");
-            if (dotIndex > 0) {
-                convertedPrint6Filename =
-                    file.name.slice(0, dotIndex) + `_print6_tstep_${tstep}` + file.name.slice(dotIndex);
-            } else {
-                convertedPrint6Filename = file.name + `_print6_tstep_${tstep}.txt`;
-            }
-
-            downloadBtn.disabled = false;
-
-            updateConverterStatus(
-                `Converted ${result.replacements} PRINT 6 block(s).\n` +
-                `Inserted line:\n${formatPrint6Line(tstep)}\n` +
-                `Removed trailing numeric slice lines after each PRINT 6 block.\n\n` +
-                `Ready to download: ${convertedPrint6Filename}`
-            );
-        } catch (err) {
-            console.error(err);
-            updateConverterStatus(`Conversion failed: ${err.message}`);
-        }
-    });
-
-    downloadBtn.addEventListener("click", () => {
-        if (!convertedPrint6Text) {
-            updateConverterStatus("No converted file is available yet.");
-            return;
-        }
-
-        const blob = new Blob([convertedPrint6Text], { type: "text/plain;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = convertedPrint6Filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-
-        URL.revokeObjectURL(url);
-    });
-}
-
-document.addEventListener("DOMContentLoaded", initializePrint6Converter);
 
 // ============================================================
 // Labels / formatting
