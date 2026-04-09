@@ -38,66 +38,22 @@ let convertedPrint6Text = null;
 let convertedPrint6Filename = "converted_hydrotherm_input.txt";
 
 function formatPrint6Line(tstep) {
-    return `    ${tstep}     ${tstep}     6     0`;
+    return `     ${tstep}     ${tstep}     6     0`;
 }
 
 function detectNewline(text) {
-    if (text.includes("\r\n")) return "\r\n";
-    if (text.includes("\n")) return "\n";
-    if (text.includes("\r")) return "\r";
-    return "\n";
-}
-
-// If the uploaded text is a single escaped blob containing literal \n
-// sequences, convert them back to real line breaks before processing.
-function normalizeInputText(text) {
-    const hasRealNewlines = /[\r\n]/.test(text);
-    const hasEscapedNewlines = text.includes("\\n");
-
-    // Only decode escaped sequences when the file appears to be one long
-    // escaped string rather than a true multiline text file.
-    if (!hasRealNewlines && hasEscapedNewlines) {
-        return text
-            .replace(/\\r\\n/g, "\r\n")
-            .replace(/\\n/g, "\n")
-            .replace(/\\r/g, "\r");
-    }
-
-    return text;
-}
-
-function isNumericOnlyLine(trimmed) {
-    return /^[0-9Ee+.\-\s]+$/.test(trimmed);
+    return text.includes("\r\n") ? "\r\n" : "\n";
 }
 
 function convertPrint6Blocks(text, tstep) {
-    const normalizedText = normalizeInputText(text);
-    const newline = detectNewline(normalizedText);
-    const lines = normalizedText.split(/\r\n|\n|\r/);
+    const newline = detectNewline(text);
+    const lines = text.split(/\r?\n/);
     let replacements = 0;
 
     for (let i = 0; i < lines.length; i++) {
         if (lines[i].trim() === "# PRINT 6" && i + 2 < lines.length) {
-            // Replace the PRINT 6 values line
             lines[i + 2] = formatPrint6Line(tstep);
             replacements += 1;
-
-            // Remove numeric-only lines immediately following the values line
-            // until we hit a comment/separator/blank line.
-            let j = i + 3;
-            while (j < lines.length) {
-                const trimmed = lines[j].trim();
-
-                if (trimmed === "" || trimmed.startsWith("#")) {
-                    break;
-                }
-
-                if (isNumericOnlyLine(trimmed)) {
-                    lines.splice(j, 1);
-                } else {
-                    break;
-                }
-            }
         }
     }
 
@@ -109,9 +65,7 @@ function convertPrint6Blocks(text, tstep) {
 
 function updateConverterStatus(message) {
     const el = document.getElementById("converterStatus");
-    if (el) {
-        el.textContent = message;
-    }
+    if (el) el.textContent = message;
 }
 
 function initializePrint6Converter() {
@@ -125,31 +79,38 @@ function initializePrint6Converter() {
     convertBtn.addEventListener("click", async () => {
         try {
             if (!fileInput.files.length) {
-                updateConverterStatus("Select a file first.");
+                updateConverterStatus("Please choose a HYDROTHERM input file first.");
                 return;
             }
 
             const tstep = parseInt(tstepInput.value, 10);
-            if (isNaN(tstep)) {
-                updateConverterStatus("Enter a valid integer tstep.");
+            if (!Number.isInteger(tstep) || tstep < 0) {
+                updateConverterStatus("Please enter a valid non-negative integer for tstep.");
                 return;
             }
 
             const file = fileInput.files[0];
-            const rawText = await file.text();
-            const result = convertPrint6Blocks(rawText, tstep);
+            const originalText = await file.text();
 
+            const result = convertPrint6Blocks(originalText, tstep);
             convertedPrint6Text = result.text;
-            convertedPrint6Filename =
-                file.name.replace(/\.[^/.]+$/, "") + `_tstep_${tstep}.txt`;
+
+            const dotIndex = file.name.lastIndexOf(".");
+            convertedPrint6Filename = dotIndex > 0
+                ? file.name.slice(0, dotIndex) + `_print6_tstep_${tstep}` + file.name.slice(dotIndex)
+                : file.name + `_print6_tstep_${tstep}.txt`;
 
             downloadBtn.disabled = false;
+
             updateConverterStatus(
-                `Converted ${result.replacements} PRINT 6 blocks. Ready to download.`
+                `Converted ${result.replacements} PRINT 6 block(s).\n` +
+                `Inserted line:\n${formatPrint6Line(tstep)}\n\n` +
+                `Ready to download: ${convertedPrint6Filename}`
             );
+
         } catch (err) {
             console.error(err);
-            updateConverterStatus("Conversion failed.");
+            updateConverterStatus(`Conversion failed: ${err.message}`);
         }
     });
 
@@ -171,7 +132,7 @@ function initializePrint6Converter() {
 }
 
 ///////////////////////////////////////////////////////////////
-// ================= BASIC HELPERS ===========================
+// ================= BASIC HELPERS ============================
 ///////////////////////////////////////////////////////////////
 
 function mag3(a, b, c) {
@@ -183,14 +144,14 @@ function isDerivedVectorField(variable) {
 }
 
 ///////////////////////////////////////////////////////////////
-// ================= FILE LOADING ============================
+// ================= FILE LOADING =============================
 ///////////////////////////////////////////////////////////////
 
 async function loadAndProcessFile() {
     const file = document.getElementById('fileInput').files[0];
-    if (!file) return alert('Select file');
+    if (!file) return alert('Please select a file.');
 
-    fileText = normalizeInputText(await file.text());
+    fileText = await file.text();
     await buildTimeIndex(fileText);
     setupTimeSlider();
     plotData();
@@ -200,8 +161,7 @@ async function buildTimeIndex(text) {
     timeIndex = {};
     timePoints = [];
 
-    const normalizedText = normalizeInputText(text);
-    const lines = normalizedText.split(/\r\n|\n|\r/);
+    const lines = text.split('\n');
     let currentTime = null;
     let start = 0;
 
@@ -252,7 +212,7 @@ async function plotData() {
 
 function parseTimeStepData(text, time) {
     const [start, end] = timeIndex[time];
-    const lines = normalizeInputText(text).split(/\r\n|\n|\r/).slice(start, end + 1);
+    const lines = text.split('\n').slice(start, end + 1);
 
     return lines.map(l => {
         const p = l.trim().split(/\s+/);
