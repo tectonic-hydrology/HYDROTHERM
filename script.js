@@ -1232,11 +1232,26 @@ function updateConverterStatus(message) {
     if (el) el.textContent = message;
 }
 
+function normalizeHydrothermText(text) {
+    if (text.includes("\\n") || text.includes("\\r")) {
+        return text
+            .replace(/\\r\\n/g, "\n")
+            .replace(/\\n/g, "\n")
+            .replace(/\\r/g, "\r");
+    }
+    return text;
+}
+
+function detectNewline(text) {
+    return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
 function convertPrint6Blocks(text, tstep) {
-    const newline = text.includes("\r\n") ? "\r\n" : "\n";
+    const normalized = normalizeHydrothermText(text);
+    const newline = detectNewline(normalized);
 
     const pattern =
-        /# PRINT 6\r?\n# \.\. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type\[I\],time_series_pr_intrv\r?\n[^\r\n]*\r?\n1\r?\n10 1 10(?=\r?\n# )/g;
+        /# PRINT 6\r?\n#\s*\.\.?\s*plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type\[I\],time_series_pr_intrv\r?\n[^\r\n]*\r?\n1\r?\n10 1 10/g;
 
     const replacement =
         `# PRINT 6${newline}` +
@@ -1244,7 +1259,7 @@ function convertPrint6Blocks(text, tstep) {
         `     ${tstep}     ${tstep}     6     0`;
 
     let replacements = 0;
-    const converted = text.replace(pattern, () => {
+    const converted = normalized.replace(pattern, () => {
         replacements += 1;
         return replacement;
     });
@@ -1296,81 +1311,7 @@ function initializePrint6Converter() {
                 `Converted ${result.replacements} PRINT 6 block(s).\n` +
                 `Inserted:\n` +
                 `     ${tstep}     ${tstep}     6     0\n\n` +
-                `Removed trailing lines "1" and "10 1 10" where present.\n\n` +
-                `Ready to download: ${convertedPrint6Filename}`
-            );
-        } catch (err) {
-            console.error(err);
-            updateConverterStatus(`Conversion failed: ${err.message}`);
-        }
-    });
-
-    downloadBtn.addEventListener("click", () => {
-        if (!convertedPrint6Text) {
-            updateConverterStatus("No converted file is available yet.");
-            return;
-        }
-
-        const blob = new Blob([convertedPrint6Text], { type: "text/plain;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = convertedPrint6Filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-
-        URL.revokeObjectURL(url);
-    });
-}
-
-function updateConverterStatus(message) {
-    const el = document.getElementById("converterStatus");
-    if (el) el.textContent = message;
-}
-
-function initializePrint6Converter() {
-    const fileInput = document.getElementById("converterFile");
-    const tstepInput = document.getElementById("tstepInput");
-    const convertBtn = document.getElementById("convertPrint6Btn");
-    const downloadBtn = document.getElementById("downloadConvertedBtn");
-
-    if (!fileInput || !tstepInput || !convertBtn || !downloadBtn) return;
-
-    convertBtn.addEventListener("click", async () => {
-        try {
-            if (!fileInput.files || fileInput.files.length === 0) {
-                updateConverterStatus("Please choose a HYDROTHERM input file first.");
-                return;
-            }
-
-            const tstep = parseInt(tstepInput.value, 10);
-            if (!Number.isInteger(tstep) || tstep < 0) {
-                updateConverterStatus("Please enter a valid non-negative integer for tstep.");
-                return;
-            }
-
-            const file = fileInput.files[0];
-            const originalText = await file.text();
-
-            const result = convertPrint6Blocks(originalText, tstep);
-            convertedPrint6Text = result.text;
-
-            const dotIndex = file.name.lastIndexOf(".");
-            if (dotIndex > 0) {
-                convertedPrint6Filename =
-                    file.name.slice(0, dotIndex) + `_print6_tstep_${tstep}` + file.name.slice(dotIndex);
-            } else {
-                convertedPrint6Filename = file.name + `_print6_tstep_${tstep}.txt`;
-            }
-
-            downloadBtn.disabled = false;
-
-            updateConverterStatus(
-                `Converted ${result.replacements} PRINT 6 block(s).\n` +
-                `Inserted line:\n${formatPrint6Line(tstep)}\n\n` +
-                `Ready to download: ${convertedPrint6Filename}`
+                `Removed trailing lines:\n1\n10 1 10`
             );
         } catch (err) {
             console.error(err);
