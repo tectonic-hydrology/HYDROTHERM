@@ -52,8 +52,26 @@ function convertPrint6Blocks(text, tstep) {
 
     for (let i = 0; i < lines.length; i++) {
         if (lines[i].trim() === "# PRINT 6" && i + 2 < lines.length) {
+
+            // Replace the PRINT 6 values line
             lines[i + 2] = formatPrint6Line(tstep);
             replacements += 1;
+
+            // Remove trailing numeric lines after PRINT 6
+            let j = i + 3;
+            while (j < lines.length) {
+                const trimmed = lines[j].trim();
+
+                // Stop at comments or blank lines
+                if (trimmed.startsWith("#") || trimmed === "") break;
+
+                // Remove numeric-only lines (e.g., "1", "10 1 10")
+                if (/^[\d.\s+\-Ee]+$/.test(trimmed)) {
+                    lines.splice(j, 1);
+                } else {
+                    break;
+                }
+            }
         }
     }
 
@@ -84,6 +102,11 @@ function initializePrint6Converter() {
             }
 
             const tstep = parseInt(tstepInput.value, 10);
+            if (isNaN(tstep)) {
+                updateConverterStatus("Enter a valid integer tstep.");
+                return;
+            }
+
             const file = fileInput.files[0];
             const text = await file.text();
 
@@ -203,6 +226,7 @@ async function plotData() {
 function parseTimeStepData(text, time) {
     const [start, end] = timeIndex[time];
     const lines = text.split('\n').slice(start, end + 1);
+
     return lines.map(l => {
         const p = l.trim().split(/\s+/);
         return {
