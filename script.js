@@ -38,35 +38,61 @@ let convertedPrint6Text = null;
 let convertedPrint6Filename = "converted_hydrotherm_input.txt";
 
 function formatPrint6Line(tstep) {
-    return `     ${tstep}     ${tstep}     6     0`;
+    return `    ${tstep}     ${tstep}     6     0`;
 }
 
 function detectNewline(text) {
-    return text.includes("\r\n") ? "\r\n" : "\n";
+    if (text.includes("\r\n")) return "\r\n";
+    if (text.includes("\n")) return "\n";
+    if (text.includes("\r")) return "\r";
+    return "\n";
+}
+
+// If the uploaded text is a single escaped blob containing literal \n
+// sequences, convert them back to real line breaks before processing.
+function normalizeInputText(text) {
+    const hasRealNewlines = /[\r\n]/.test(text);
+    const hasEscapedNewlines = text.includes("\\n");
+
+    // Only decode escaped sequences when the file appears to be one long
+    // escaped string rather than a true multiline text file.
+    if (!hasRealNewlines && hasEscapedNewlines) {
+        return text
+            .replace(/\\r\\n/g, "\r\n")
+            .replace(/\\n/g, "\n")
+            .replace(/\\r/g, "\r");
+    }
+
+    return text;
+}
+
+function isNumericOnlyLine(trimmed) {
+    return /^[0-9Ee+.\-\s]+$/.test(trimmed);
 }
 
 function convertPrint6Blocks(text, tstep) {
-    const newline = detectNewline(text);
-    const lines = text.split(/\r?\n/);
+    const normalizedText = normalizeInputText(text);
+    const newline = detectNewline(normalizedText);
+    const lines = normalizedText.split(/\r\n|\n|\r/);
     let replacements = 0;
 
     for (let i = 0; i < lines.length; i++) {
         if (lines[i].trim() === "# PRINT 6" && i + 2 < lines.length) {
-
             // Replace the PRINT 6 values line
             lines[i + 2] = formatPrint6Line(tstep);
             replacements += 1;
 
-            // Remove trailing numeric lines after PRINT 6
+            // Remove numeric-only lines immediately following the values line
+            // until we hit a comment/separator/blank line.
             let j = i + 3;
             while (j < lines.length) {
                 const trimmed = lines[j].trim();
 
-                // Stop at comments or blank lines
-                if (trimmed.startsWith("#") || trimmed === "") break;
+                if (trimmed === "" || trimmed.startsWith("#")) {
+                    break;
+                }
 
-                // Remove numeric-only lines (e.g., "1", "10 1 10")
-                if (/^[\d.\s+\-Ee]+$/.test(trimmed)) {
+                if (isNumericOnlyLine(trimmed)) {
                     lines.splice(j, 1);
                 } else {
                     break;
@@ -83,7 +109,9 @@ function convertPrint6Blocks(text, tstep) {
 
 function updateConverterStatus(message) {
     const el = document.getElementById("converterStatus");
-    if (el) el.textContent = message;
+    if (el) {
+        el.textContent = message;
+    }
 }
 
 function initializePrint6Converter() {
@@ -108,21 +136,17 @@ function initializePrint6Converter() {
             }
 
             const file = fileInput.files[0];
-            const text = await file.text();
+            const rawText = await file.text();
+            const result = convertPrint6Blocks(rawText, tstep);
 
-            const result = convertPrint6Blocks(text, tstep);
             convertedPrint6Text = result.text;
-
             convertedPrint6Filename =
-                file.name.replace(/\.[^/.]+$/, "") +
-                `_tstep_${tstep}.txt`;
+                file.name.replace(/\.[^/.]+$/, "") + `_tstep_${tstep}.txt`;
 
             downloadBtn.disabled = false;
-
             updateConverterStatus(
-                `Converted ${result.replacements} PRINT 6 blocks.\nReady to download.`
+                `Converted ${result.replacements} PRINT 6 blocks. Ready to download.`
             );
-
         } catch (err) {
             console.error(err);
             updateConverterStatus("Conversion failed.");
@@ -132,20 +156,22 @@ function initializePrint6Converter() {
     downloadBtn.addEventListener("click", () => {
         if (!convertedPrint6Text) return;
 
-        const blob = new Blob([convertedPrint6Text], { type: "text/plain" });
+        const blob = new Blob([convertedPrint6Text], { type: "text/plain;charset=utf-8" });
         const url = URL.createObjectURL(blob);
 
         const a = document.createElement("a");
         a.href = url;
         a.download = convertedPrint6Filename;
+        document.body.appendChild(a);
         a.click();
+        document.body.removeChild(a);
 
         URL.revokeObjectURL(url);
     });
 }
 
 ///////////////////////////////////////////////////////////////
-// ================= BASIC HELPERS ============================
+// ================= BASIC HELPERS ===========================
 ///////////////////////////////////////////////////////////////
 
 function mag3(a, b, c) {
@@ -157,14 +183,14 @@ function isDerivedVectorField(variable) {
 }
 
 ///////////////////////////////////////////////////////////////
-// ================= FILE LOADING =============================
+// ================= FILE LOADING ============================
 ///////////////////////////////////////////////////////////////
 
 async function loadAndProcessFile() {
     const file = document.getElementById('fileInput').files[0];
     if (!file) return alert('Select file');
 
-    fileText = await file.text();
+    fileText = normalizeInputText(await file.text());
     await buildTimeIndex(fileText);
     setupTimeSlider();
     plotData();
@@ -174,7 +200,8 @@ async function buildTimeIndex(text) {
     timeIndex = {};
     timePoints = [];
 
-    const lines = text.split('\n');
+    const normalizedText = normalizeInputText(text);
+    const lines = normalizedText.split(/\r\n|\n|\r/);
     let currentTime = null;
     let start = 0;
 
@@ -225,7 +252,7 @@ async function plotData() {
 
 function parseTimeStepData(text, time) {
     const [start, end] = timeIndex[time];
-    const lines = text.split('\n').slice(start, end + 1);
+    const lines = normalizeInputText(text).split(/\r\n|\n|\r/).slice(start, end + 1);
 
     return lines.map(l => {
         const p = l.trim().split(/\s+/);
