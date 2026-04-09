@@ -1204,18 +1204,6 @@ function setupPlotClickSelection() {
     });
 }
 
-// ============================================================
-// PRINT 6 TSTEP CONVERTER
-// ============================================================
-
-let convertedPrint6Text = null;
-let convertedPrint6Filename = "converted_hydrotherm_input.txt";
-
-function updateConverterStatus(message) {
-    const el = document.getElementById("converterStatus");
-    if (el) el.textContent = message;
-}
-
 function normalizeHydrothermText(text) {
     if (text.includes("\\n") || text.includes("\\r")) {
         return text
@@ -1230,97 +1218,76 @@ function detectNewline(text) {
     return text.includes("\r\n") ? "\r\n" : "\n";
 }
 
+function formatPrint6DataLine(tstep) {
+    // Keep a fixed leading indent and explicit spacing between fields.
+    // This is safer for HYDROTHERM-style Fortran input than rebuilding with tabs.
+    return `     ${tstep}     ${tstep}     6     0`;
+}
+
 function convertPrint6Blocks(text, tstep) {
     const normalized = normalizeHydrothermText(text);
     const newline = detectNewline(normalized);
+    const lines = normalized.split(/\r?\n/);
 
-    const pattern =
-        /# PRINT 6\r?\n#\s*\.\.?\s*plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type\[I\],time_series_pr_intrv\r?\n[^\r\n]*\r?\n1\r?\n10 1 10/g;
-
-    const replacement =
-        `# PRINT 6${newline}` +
-        `# .. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type[I],time_series_pr_intrv${newline}` +
-        `     ${tstep}     ${tstep}     6     0`;
-
+    const out = [];
+    let i = 0;
     let replacements = 0;
-    const converted = normalized.replace(pattern, () => {
-        replacements += 1;
-        return replacement;
-    });
+
+    while (i < lines.length) {
+        const line = lines[i];
+
+        if (/^\s*#\s*PRINT\s+6\s*$/i.test(line)) {
+            replacements += 1;
+
+            // 1) Keep the PRINT 6 header exactly as a clean canonical line
+            out.push("# PRINT 6");
+
+            // 2) Keep/restore the descriptor line in the expected HYDROTHERM form
+            i += 1;
+            if (i < lines.length && /^\s*#/.test(lines[i])) {
+                out.push("# .. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type[I],time_series_pr_intrv");
+                i += 1;
+            } else {
+                out.push("# .. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type[I],time_series_pr_intrv");
+            }
+
+            // 3) Insert the single replacement data line
+            out.push(formatPrint6DataLine(tstep));
+
+            // 4) Skip everything else in this PRINT 6 block until the next section marker.
+            //    This removes the old data line plus any extra lines such as:
+            //    1
+            //    10 1 10
+            while (
+                i < lines.length &&
+                !/^\s*#\s*PRINT\s+[1-6]\s*$/i.test(lines[i]) &&
+                !/^\s*#\s*SLICE number\s*$/i.test(lines[i]) &&
+                !/^\s*#\s*-{3,}\s*$/.test(lines[i]) &&
+                !/^\s*#\s*\.\./.test(lines[i]) &&
+                !/^\s*#\s*\./.test(lines[i]) &&
+                !/^\s*#\s*TIME PERIOD/i.test(lines[i]) &&
+                !/^\s*#\s*UNCONFINED/i.test(lines[i]) &&
+                !/^\s*#\s*SATURATION FUNCTION/i.test(lines[i]) &&
+                !/^\s*#\s*End of Keyword Data Block section/i.test(lines[i]) &&
+                !/^\s*#\s*Insert additional groups/i.test(lines[i]) &&
+                !/^\s*#\s*PARAMETER/i.test(lines[i]) &&
+                !/^\s*#\s*Start of /i.test(lines[i]) &&
+                !/^\s*#\s*End of /i.test(lines[i])
+            ) {
+                i += 1;
+            }
+
+            continue;
+        }
+
+        out.push(line);
+        i += 1;
+    }
 
     return {
-        text: converted,
+        text: out.join(newline),
         replacements
     };
-}
-
-function initializePrint6Converter() {
-    const fileInput = document.getElementById("converterFile");
-    const tstepInput = document.getElementById("tstepInput");
-    const convertBtn = document.getElementById("convertPrint6Btn");
-    const downloadBtn = document.getElementById("downloadConvertedBtn");
-
-    if (!fileInput || !tstepInput || !convertBtn || !downloadBtn) return;
-
-    convertBtn.addEventListener("click", async () => {
-        try {
-            if (!fileInput.files || fileInput.files.length === 0) {
-                updateConverterStatus("Please choose a HYDROTHERM input file first.");
-                return;
-            }
-
-            const tstep = parseInt(tstepInput.value, 10);
-            if (!Number.isInteger(tstep) || tstep < 0) {
-                updateConverterStatus("Please enter a valid non-negative integer for tstep.");
-                return;
-            }
-
-            const file = fileInput.files[0];
-            const originalText = await file.text();
-
-            const result = convertPrint6Blocks(originalText, tstep);
-            convertedPrint6Text = result.text;
-
-            const dotIndex = file.name.lastIndexOf(".");
-            if (dotIndex > 0) {
-                convertedPrint6Filename =
-                    file.name.slice(0, dotIndex) + `_print6_tstep_${tstep}` + file.name.slice(dotIndex);
-            } else {
-                convertedPrint6Filename = file.name + `_print6_tstep_${tstep}.txt`;
-            }
-
-            downloadBtn.disabled = false;
-
-            updateConverterStatus(
-                `Converted ${result.replacements} PRINT 6 block(s).\n` +
-                `Inserted:\n` +
-                `     ${tstep}     ${tstep}     6     0\n\n` +
-                `Removed trailing lines:\n1\n10 1 10`
-            );
-        } catch (err) {
-            console.error(err);
-            updateConverterStatus(`Conversion failed: ${err.message}`);
-        }
-    });
-
-    downloadBtn.addEventListener("click", () => {
-        if (!convertedPrint6Text) {
-            updateConverterStatus("No converted file is available yet.");
-            return;
-        }
-
-        const blob = new Blob([convertedPrint6Text], { type: "text/plain;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = convertedPrint6Filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-
-        URL.revokeObjectURL(url);
-    });
 }
 
 // ============================================================
