@@ -400,25 +400,49 @@ function validateFileFormat(text) {
     };
 }
 
+function shouldSkipScalarLine(trimmed) {
+    if (!trimmed) return true;
+    if (trimmed.startsWith('.')) return true;
+    if (trimmed.startsWith('#')) return true;
+    if (trimmed.includes('No.')) return true;
+    if (trimmed.includes('(km)')) return true;
+    if (trimmed.includes('(yr)')) return true;
+    if (trimmed.includes('(Deg.C)')) return true;
+    if (trimmed.includes('(bar)')) return true;
+    if (trimmed.includes('(-)')) return true;
+    return false;
+}
+
+function isValidNumericRow(parts, minCols) {
+    if (parts.length < minCols) return false;
+    for (let i = 0; i < minCols; i++) {
+        if (parts[i] === undefined || parts[i] === null || parts[i] === '') return false;
+        if (Number.isNaN(parseFloat(parts[i]))) return false;
+    }
+    return true;
+}
+
+function splitLinesPreserve(text) {
+    return text.split(/\r?\n/);
+}
+
 async function buildTimeIndex(text) {
     timeIndex = {};
     timePoints = [];
     let currentTime = null;
     let startLine = 0;
     let lineNum = 0;
-    const lines = text.split('\n');
+    const lines = splitLinesPreserve(text);
 
     for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('.') || trimmed.includes('(km)') ||
-            trimmed.includes('(yr)') || trimmed.includes('(Deg.C)') ||
-            trimmed.includes('(bar)') || trimmed.includes('(-)') || trimmed.includes('No.')) {
+        if (shouldSkipScalarLine(trimmed)) {
             lineNum++;
             continue;
         }
 
         const parts = trimmed.split(/\s+/);
-        if (parts.length >= 8) {
+        if (isValidNumericRow(parts, 8)) {
             const time = parseFloat(parts[3]);
             if (!isNaN(time)) {
                 if (currentTime === null) {
@@ -448,30 +472,26 @@ function parseTimeStepData(text, time) {
     if (!range) return [];
 
     const [start, end] = range;
-    const lines = text.split('\n').slice(start, end + 1);
+    const lines = splitLinesPreserve(text).slice(start, end + 1);
     const data = [];
 
     for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed) continue;
+        if (shouldSkipScalarLine(trimmed)) continue;
 
         const parts = trimmed.split(/\s+/);
-        if (parts.length >= 8) {
-            const x = parseFloat(parts[0]);
-            const y = parseFloat(parts[1]);
-            const z = parseFloat(parts[2]);
-            const timeVal = parseFloat(parts[3]);
-            const temperature = parseFloat(parts[4]);
-            const pressure = parseFloat(parts[5]);
-            const saturation = parseFloat(parts[6]);
-            const phase = parseFloat(parts[7]);
+        if (!isValidNumericRow(parts, 8)) continue;
 
-            if (!isNaN(x) && !isNaN(y) && !isNaN(z) && !isNaN(timeVal) &&
-                !isNaN(temperature) && !isNaN(pressure) &&
-                !isNaN(saturation) && !isNaN(phase)) {
-                data.push({ x, y, z, time: timeVal, temperature, pressure, saturation, phase });
-            }
-        }
+        const x = parseFloat(parts[0]);
+        const y = parseFloat(parts[1]);
+        const z = parseFloat(parts[2]);
+        const timeVal = parseFloat(parts[3]);
+        const temperature = parseFloat(parts[4]);
+        const pressure = parseFloat(parts[5]);
+        const saturation = parseFloat(parts[6]);
+        const phase = parseFloat(parts[7]);
+
+        data.push({ x, y, z, time: timeVal, temperature, pressure, saturation, phase });
     }
 
     return data;
@@ -596,25 +616,35 @@ function validateVectorFileFormat(text) {
     };
 }
 
+function shouldSkipVectorLine(trimmed) {
+    if (!trimmed) return true;
+    if (trimmed.startsWith('.')) return true;
+    if (trimmed.startsWith('#')) return true;
+    if (trimmed.includes('No.')) return true;
+    if (trimmed.includes('(km)')) return true;
+    if (trimmed.includes('(yr)')) return true;
+    if (trimmed.includes('(g/s-cm^2)')) return true;
+    if (trimmed.toLowerCase().includes('mass flux')) return true;
+    return false;
+}
+
 async function buildVectorTimeIndex(text) {
     vectorTimeIndex = {};
     vectorTimePoints = [];
     let currentTime = null;
     let startLine = 0;
     let lineNum = 0;
-    const lines = text.split('\n');
+    const lines = splitLinesPreserve(text);
 
     for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('.') || trimmed.includes('(km)') ||
-            trimmed.includes('(yr)') || trimmed.includes('(g/s-cm^2)') ||
-            trimmed.includes('No.')) {
+        if (shouldSkipVectorLine(trimmed)) {
             lineNum++;
             continue;
         }
 
         const parts = trimmed.split(/\s+/);
-        if (parts.length >= 10) {
+        if (isValidNumericRow(parts, 10)) {
             const time = parseFloat(parts[3]);
             if (!isNaN(time)) {
                 if (currentTime === null) {
@@ -643,15 +673,15 @@ function parseVectorTimeStepData(text, time) {
     if (!vectorTimeIndex[time]) return [];
 
     const [start, end] = vectorTimeIndex[time];
-    const lines = text.split('\n').slice(start, end + 1);
+    const lines = splitLinesPreserve(text).slice(start, end + 1);
     const data = [];
 
     for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed) continue;
+        if (shouldSkipVectorLine(trimmed)) continue;
 
         const parts = trimmed.split(/\s+/);
-        if (parts.length < 10) continue;
+        if (!isValidNumericRow(parts, 10)) continue;
 
         const x = parseFloat(parts[0]);
         const y = parseFloat(parts[1]);
@@ -664,11 +694,7 @@ function parseVectorTimeStepData(text, time) {
         const ys = parseFloat(parts[8]);
         const zs = parseFloat(parts[9]);
 
-        if (!isNaN(x) && !isNaN(y) && !isNaN(z) && !isNaN(timeVal) &&
-            !isNaN(xw) && !isNaN(yw) && !isNaN(zw) &&
-            !isNaN(xs) && !isNaN(ys) && !isNaN(zs)) {
-            data.push({ x, y, z, time: timeVal, xw, yw, zw, xs, ys, zs });
-        }
+        data.push({ x, y, z, time: timeVal, xw, yw, zw, xs, ys, zs });
     }
 
     return data;
@@ -689,69 +715,61 @@ function clearVectors() {
 function setupTimeSlider() {
     const timeSlider = document.getElementById('timeSlider');
     const timeRange = document.getElementById('timeRange');
+    const timeValue = document.getElementById('timeValue');
 
+    timeRange.min = 0;
     timeRange.max = timePoints.length - 1;
-    timeRange.value = 0;
-    timeRange.oninput = async function () {
-        currentTimeIndex = parseInt(this.value);
+    timeRange.value = currentTimeIndex;
+
+    timeRange.oninput = function() {
+        currentTimeIndex = parseInt(this.value, 10);
+        timeValue.textContent = `Timestep ${currentTimeIndex + 1} / ${timePoints.length}`;
         updateTimeDisplay();
-        await plotData();
+        plotData();
     };
 
+    timeValue.textContent = `Timestep ${currentTimeIndex + 1} / ${timePoints.length}`;
     updateTimeDisplay();
     timeSlider.style.display = 'block';
-
-    setupColorbarControls();
-    setupAxisControls();
-    setupVectorControls();
 }
 
 function setupColorbarControls() {
-    const colorbarControls = document.getElementById('colorbarControls');
-
     $("#slider-range").slider({
         range: true,
         min: 0,
         max: 100,
         values: [0, 100],
-        slide: function (event, ui) {
-            const minPercent = ui.values[0];
-            const maxPercent = ui.values[1];
+        slide: function(event, ui) {
             const dataRange = currentDataRange.max - currentDataRange.min;
-
             customColorbarRange = {
-                min: currentDataRange.min + (dataRange * minPercent / 100),
-                max: currentDataRange.min + (dataRange * maxPercent / 100)
+                min: currentDataRange.min + (ui.values[0] / 100) * dataRange,
+                max: currentDataRange.min + (ui.values[1] / 100) * dataRange
             };
-
             updateRangeDisplay();
+        },
+        change: function() {
             plotData();
         }
     });
 
     updateRangeDisplay();
-    colorbarControls.style.display = 'block';
 }
 
 function setupAxisControls() {
-    const axisControls = document.getElementById('axisControls');
-
     $("#x-slider-range").slider({
         range: true,
         min: 0,
         max: 100,
         values: [0, 100],
-        slide: function (event, ui) {
-            const minPercent = ui.values[0];
-            const maxPercent = ui.values[1];
+        slide: function(event, ui) {
             const xRange = currentXRange.max - currentXRange.min;
-
             customXRange = {
-                min: currentXRange.min + (xRange * minPercent / 100),
-                max: currentXRange.min + (xRange * maxPercent / 100)
+                min: currentXRange.min + (ui.values[0] / 100) * xRange,
+                max: currentXRange.min + (ui.values[1] / 100) * xRange
             };
-
             updateXRangeDisplay();
+        },
+        change: function() {
             plotData();
         }
     });
@@ -761,24 +779,21 @@ function setupAxisControls() {
         min: 0,
         max: 100,
         values: [0, 100],
-        slide: function (event, ui) {
-            const minPercent = ui.values[0];
-            const maxPercent = ui.values[1];
+        slide: function(event, ui) {
             const zRange = currentZRange.max - currentZRange.min;
-
             customZRange = {
-                min: currentZRange.min + (zRange * minPercent / 100),
-                max: currentZRange.min + (zRange * maxPercent / 100)
+                min: currentZRange.min + (ui.values[0] / 100) * zRange,
+                max: currentZRange.min + (ui.values[1] / 100) * zRange
             };
-
             updateZRangeDisplay();
+        },
+        change: function() {
             plotData();
         }
     });
 
     updateXRangeDisplay();
     updateZRangeDisplay();
-    axisControls.style.display = 'block';
 }
 
 function setupVectorControls() {
@@ -787,26 +802,30 @@ function setupVectorControls() {
     const vectorTypeSelect = document.getElementById('vectorTypeSelect');
     const arrowColorSelect = document.getElementById('arrowColorSelect');
 
-    arrowScaleSlider.value = -2.0;
+    arrowScaleSlider.value = arrowScale;
 
-    arrowScaleSlider.oninput = function () {
+    arrowScaleSlider.addEventListener('input', function() {
         arrowScale = parseFloat(this.value);
         updateArrowScaleDisplay(arrowScaleDisplay);
-        if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
-            plotData();
-        }
-    };
-
-    updateArrowScaleDisplay(arrowScaleDisplay);
-
-    vectorTypeSelect.addEventListener('change', function () {
-        vectorType = this.value;
-        if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
+        if (vectorData && vectorData.length > 0) {
             plotData();
         }
     });
 
-    arrowColorSelect.addEventListener('change', function () {
+    updateArrowScaleDisplay(arrowScaleDisplay);
+
+    vectorTypeSelect.addEventListener('change', function() {
+        vectorType = this.value;
+        if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
+            const currentTime = timePoints[currentTimeIndex];
+            const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
+            vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
+            plotData();
+        }
+    });
+
+    arrowColor = arrowColorSelect.value;
+    arrowColorSelect.addEventListener('change', function() {
         arrowColor = this.value;
         if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
             plotData();
@@ -814,57 +833,71 @@ function setupVectorControls() {
     });
 }
 
-function updateTimeDisplay() {
-    const timeDisplay = document.getElementById('timeDisplay');
-    if (timePoints.length > 0) {
-        timeDisplay.textContent = `Time: ${timePoints[currentTimeIndex].toExponential(3)} years (${currentTimeIndex + 1}/${timePoints.length})`;
+function updateArrowScaleDisplay(arrowScaleDisplay) {
+    const actualScale = Math.pow(10, arrowScale);
+    let displayText;
+
+    if (actualScale >= 1000000) {
+        displayText = `Scale: ${(actualScale / 1000000).toFixed(1)}Mx`;
+    } else if (actualScale >= 1000) {
+        displayText = `Scale: ${(actualScale / 1000).toFixed(1)}Kx`;
+    } else if (actualScale < 1) {
+        displayText = `Scale: ${actualScale.toExponential(1)}x`;
+    } else {
+        displayText = `Scale: ${actualScale.toFixed(1)}x`;
     }
+
+    arrowScaleDisplay.textContent = displayText;
 }
 
 function updateRangeDisplay() {
-    const rangeDisplay = document.getElementById('rangeDisplay');
+    const amount = document.getElementById('amount');
     if (customColorbarRange) {
-        rangeDisplay.textContent = `Color range: ${customColorbarRange.min.toFixed(3)} to ${customColorbarRange.max.toFixed(3)}`;
+        amount.value = `${customColorbarRange.min.toFixed(3)} - ${customColorbarRange.max.toFixed(3)}`;
     } else {
-        rangeDisplay.textContent = `Color range: ${currentDataRange.min.toFixed(3)} to ${currentDataRange.max.toFixed(3)}`;
+        amount.value = `${currentDataRange.min.toFixed(3)} - ${currentDataRange.max.toFixed(3)}`;
     }
 }
 
 function updateXRangeDisplay() {
-    const xRangeDisplay = document.getElementById('xRangeDisplay');
+    const xRangeAmount = document.getElementById('xRangeAmount');
     if (customXRange) {
-        xRangeDisplay.textContent = `X range: ${customXRange.min.toFixed(3)} to ${customXRange.max.toFixed(3)} km`;
+        xRangeAmount.value = `${customXRange.min.toFixed(3)} - ${customXRange.max.toFixed(3)} km`;
     } else {
-        xRangeDisplay.textContent = `X range: ${currentXRange.min.toFixed(3)} to ${currentXRange.max.toFixed(3)} km`;
+        xRangeAmount.value = `${currentXRange.min.toFixed(3)} - ${currentXRange.max.toFixed(3)} km`;
     }
 }
 
 function updateZRangeDisplay() {
-    const zRangeDisplay = document.getElementById('zRangeDisplay');
+    const zRangeAmount = document.getElementById('zRangeAmount');
     if (customZRange) {
-        zRangeDisplay.textContent = `Z range: ${customZRange.min.toFixed(3)} to ${customZRange.max.toFixed(3)} km`;
+        zRangeAmount.value = `${customZRange.min.toFixed(3)} - ${customZRange.max.toFixed(3)} km`;
     } else {
-        zRangeDisplay.textContent = `Z range: ${currentZRange.min.toFixed(3)} to ${currentZRange.max.toFixed(3)} km`;
+        zRangeAmount.value = `${currentZRange.min.toFixed(3)} - ${currentZRange.max.toFixed(3)} km`;
     }
 }
 
-function updateArrowScaleDisplay(displayElement) {
-    if (displayElement) {
-        displayElement.textContent = `Arrow Scale: 10^${arrowScale.toFixed(1)}`;
-    }
+function resetColorbar() {
+    customColorbarRange = null;
+    $("#slider-range").slider("values", [0, 100]);
+    updateRangeDisplay();
+    plotData();
 }
 
-function showTimeSeriesSection() {
-    const section = document.getElementById('timeSeriesSection');
-    if (section) section.style.display = 'block';
+function resetAxes() {
+    customXRange = null;
+    customZRange = null;
+    $("#x-slider-range").slider("values", [0, 100]);
+    $("#z-slider-range").slider("values", [0, 100]);
+    updateXRangeDisplay();
+    updateZRangeDisplay();
+    plotData();
 }
 
-function showLoading(show) {
-    const loading = document.getElementById('loading');
-    const plotDiv = document.getElementById('plotDiv');
-
-    if (loading) loading.style.display = show ? 'block' : 'none';
-    if (plotDiv) plotDiv.style.display = show ? 'none' : 'block';
+function updateTimeDisplay() {
+    const timeDisplay = document.getElementById('timeDisplay');
+    const currentTime = timePoints[currentTimeIndex];
+    timeDisplay.textContent = `Time: ${currentTime.toFixed(5)} years`;
 }
 
 // ============================================================
@@ -876,331 +909,297 @@ async function plotData() {
 
     const variableSelect = document.getElementById('variableSelect');
     const colormapSelect = document.getElementById('colormapSelect');
-    const variable = variableSelect.value;
-    const colorscale = colormapSelect.value;
+    const selectedVariable = variableSelect.value;
+    const selectedColormap = colormapSelect.value;
     const currentTime = timePoints[currentTimeIndex];
 
     const timeData = parseTimeStepData(fileText, currentTime);
     if (timeData.length === 0) return;
 
-    let plotRows = [];
-    let zTitle = '';
+    if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
+        const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
+        vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
+    }
 
-    if (isDerivedVectorField(variable)) {
-        if (!vectorFileText || Object.keys(vectorTimeIndex).length === 0) {
-            alert('This field requires a Plot_vector file. Please load a vector file.');
+    let meshData;
+    if (isDerivedVectorField(selectedVariable)) {
+        if (!vectorData || vectorData.length === 0) {
+            alert('Please load a vector file to plot vector-derived quantities.');
             return;
         }
 
-        const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
-        const vectorRows = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
         const tempLookup = buildTemperatureLookup(timeData);
-        plotRows = deriveVectorField(vectorRows, variable, tempLookup);
-
-        if (variable === 'water_flux_mag') zTitle = 'Water mass-flux magnitude (g/s-cm²)';
-        if (variable === 'steam_flux_mag') zTitle = 'Steam mass-flux magnitude (g/s-cm²)';
-        if (variable === 'total_flux_mag') zTitle = 'Total mass-flux magnitude (g/s-cm²)';
-        if (variable === 'heat_flux_proxy') zTitle = 'Heat transport proxy (mW/m²)';
-        if (variable === 'heat_flux_total') zTitle = 'Total heat transport (MW)';
-
-        vectorData = vectorRows;
+        const derivedRows = deriveVectorField(vectorData, selectedVariable, tempLookup);
+        meshData = createMeshGridFromXYZ(derivedRows);
     } else {
-        plotRows = timeData.map(row => ({
-            x: row.x,
-            y: row.z,
-            z: row[variable]
-        }));
+        meshData = createMeshGrid(timeData, selectedVariable);
+    }
 
-        if (variable === 'temperature') zTitle = 'Temperature (°C)';
-        if (variable === 'pressure') zTitle = 'Pressure (bar)';
-        if (variable === 'saturation') zTitle = 'Saturation (-)';
-        if (variable === 'phase') zTitle = 'Phase';
+    const allValues = meshData.z.flat().filter(val => !isNaN(val) && isFinite(val));
+    if (allValues.length > 0) {
+        currentDataRange = {
+            min: Math.min(...allValues),
+            max: Math.max(...allValues)
+        };
+    }
 
-        if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
-            const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
-            vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
+    if (meshData.x.length > 0 && meshData.y.length > 0) {
+        currentXRange = {
+            min: Math.min(...meshData.x),
+            max: Math.max(...meshData.x)
+        };
+        currentZRange = {
+            min: Math.min(...meshData.y),
+            max: Math.max(...meshData.y)
+        };
+    }
+
+    const colorbarRange = customColorbarRange || currentDataRange;
+    const xAxisRange = customXRange || currentXRange;
+    const zAxisRange = customZRange || currentZRange;
+
+    const traces = [];
+
+    const heatmapTrace = {
+        z: meshData.z,
+        x: meshData.x,
+        y: meshData.y,
+        type: 'heatmap',
+        colorscale: selectedColormap,
+        zmin: colorbarRange.min,
+        zmax: colorbarRange.max,
+        colorbar: {
+            title: getVariableLabel(selectedVariable),
+            titleside: 'right',
+            tickfont: { color: currentTheme === 'dark' ? '#ffffff' : '#222222' },
+            titlefont: { color: currentTheme === 'dark' ? '#ffffff' : '#222222' }
+        },
+        hoverongaps: false,
+        hovertemplate:
+            'X: %{x:.3f} km<br>' +
+            'Z: %{y:.3f} km<br>' +
+            `${getVariableLabel(selectedVariable)}: %{z:.3f}<br>` +
+            '<extra></extra>'
+    };
+    traces.push(heatmapTrace);
+
+    if (plottedPoints.length > 0) {
+        for (let i = 0; i < plottedPoints.length; i++) {
+            const point = plottedPoints[i];
+            traces.push({
+                x: [point.x],
+                y: [point.z],
+                type: 'scatter',
+                mode: 'markers+text',
+                marker: {
+                    size: 12,
+                    color: point.color,
+                    line: {
+                        color: 'white',
+                        width: 2
+                    },
+                    symbol: 'circle'
+                },
+                text: [`P${point.id}`],
+                textposition: 'top center',
+                textfont: { color: point.color, size: 12 },
+                name: `Point ${point.id} (${point.x.toFixed(3)}, ${point.z.toFixed(3)})`,
+                showlegend: false,
+                hovertemplate:
+                    `Point ${point.id}<br>` +
+                    'X: %{x:.3f} km<br>' +
+                    'Z: %{y:.3f} km<br>' +
+                    '<extra></extra>'
+            });
         }
     }
 
-    const finiteValues = plotRows.map(r => r.z).filter(v => Number.isFinite(v));
-    if (finiteValues.length === 0) {
-        alert('No plottable numeric values were found for this timestep/field.');
-        return;
-    }
-
-    currentDataRange = {
-        min: Math.min(...finiteValues),
-        max: Math.max(...finiteValues)
-    };
-
-    currentXRange = {
-        min: Math.min(...plotRows.map(r => r.x)),
-        max: Math.max(...plotRows.map(r => r.x))
-    };
-
-    currentZRange = {
-        min: Math.min(...plotRows.map(r => r.y)),
-        max: Math.max(...plotRows.map(r => r.y))
-    };
-
-    updateRangeDisplay();
-    updateXRangeDisplay();
-    updateZRangeDisplay();
-
-    const mesh = createMeshGridFromXYZ(plotRows);
-
-    const data = [{
-        type: 'heatmap',
-        x: mesh.x,
-        y: mesh.y,
-        z: mesh.z,
-        colorscale: colorscale,
-        colorbar: { title: zTitle },
-        zmin: customColorbarRange ? customColorbarRange.min : currentDataRange.min,
-        zmax: customColorbarRange ? customColorbarRange.max : currentDataRange.max,
-        hovertemplate: 'x: %{x:.3f} km<br>z: %{y:.3f} km<br>value: %{z:.5g}<extra></extra>'
-    }];
-
     if (vectorData && vectorData.length > 0) {
-        const vectorTrace = createVectorTrace(vectorData, vectorType);
-        if (vectorTrace) data.push(vectorTrace);
-    }
+        const sampleStep = Math.max(1, Math.floor(vectorData.length / 1000));
+        const sampledData = vectorData.filter((_, index) => index % sampleStep === 0);
 
-    const pointTraces = createPointTraces();
-    data.push(...pointTraces);
+        let arrowX = [];
+        let arrowY = [];
+        let headX = [];
+        let headY = [];
 
-    const layout = {
-        title: `HYDROTHERM ${variable.replaceAll('_', ' ')} at t = ${currentTime.toExponential(3)} yr`,
+        sampledData.forEach(d => {
+            const comp = getVectorComponentsForPlot(d, vectorType);
+
+            const x0 = d.x;
+            const y0 = d.z;
+            const u = comp.u;
+            const v = comp.w;
+
+            const mag = Math.sqrt(u * u + v * v);
+            if (mag <= 0) return;
+
+            const logMag = Math.log10(mag + 1e-30);
+            const shiftedMag = logMag + 12;
+
+            const ux = u / mag;
+            const uy = v / mag;
+
+            const scale = Math.pow(10, arrowScale);
+            const length = Math.max(0.001, shiftedMag) * scale;
+            tiple Points`,
+            font: { size: 16, color: currentTheme === 'dark' ? '#ffffff' : '#333333' }
+        },
         xaxis: {
-            title: 'X (km)',
-            range: customXRange ? [customXRange.min, customXRange.max] : [currentXRange.min, currentXRange.max],
-            gridcolor: getComputedStyle(document.documentElement).getPropertyValue('--grid-color').trim(),
-            color: getComputedStyle(document.documentElement).getPropertyValue('--text-color').trim()
+            title: 'Time (years)',
+            gridcolor: currentTheme === 'dark' ? '#444' : 'lightgray',
+            zeroline: false,
+            color: currentTheme === 'dark' ? '#ffffff' : '#333333',
+            tickfont: { color: currentTheme === 'dark' ? '#ffffff' : '#333333' }
         },
         yaxis: {
-            title: 'Z (km)',
-            range: customZRange ? [customZRange.min, customZRange.max] : [currentZRange.min, currentZRange.max],
-            scaleanchor: 'x',
-            scaleratio: 1,
-            gridcolor: getComputedStyle(document.documentElement).getPropertyValue('--grid-color').trim(),
-            color: getComputedStyle(document.documentElement).getPropertyValue('--text-color').trim()
+            title: getVariableLabel(selectedVariable),
+            gridcolor: currentTheme === 'dark' ? '#444' : 'lightgray',
+            zeroline: false,
+            color: currentTheme === 'dark' ? '#ffffff' : '#333333',
+            tickfont: { color: currentTheme === 'dark' ? '#ffffff' : '#333333' }
         },
-        plot_bgcolor: getComputedStyle(document.documentElement).getPropertyValue('--plot-bg').trim(),
-        paper_bgcolor: getComputedStyle(document.documentElement).getPropertyValue('--plot-paper-bg').trim(),
-        font: {
-            color: getComputedStyle(document.documentElement).getPropertyValue('--text-color').trim()
-        },
-        margin: { l: 70, r: 40, t: 60, b: 60 },
-        showlegend: false
+        plot_bgcolor: currentTheme === 'dark' ? '#1a1a1a' : 'white',
+        paper_bgcolor: currentTheme === 'dark' ? '#1a1a1a' : 'white',
+        margin: { l: 60, r: 60, t: 80, b: 60 },
+        height: 400,
+        width: null,
+        autosize: true,
+        showlegend: true,
+        legend: {
+            x: 0.02,
+            y: 0.98,
+            bgcolor: currentTheme === 'dark' ? 'rgba(30,30,30,0.8)' : 'rgba(255,255,255,0.8)',
+            bordercolor: currentTheme === 'dark' ? '#444' : 'lightgray',
+            font: { color: currentTheme === 'dark' ? '#ffffff' : '#333333' }
+        }
     };
 
     const config = {
         responsive: true,
         displayModeBar: true,
-        scrollZoom: true
+        modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d'],
+        displaylogo: false,
+        useResizeHandler: true
     };
 
-    await Plotly.newPlot('plotDiv', data, layout, config);
-
-    const plotDiv = document.getElementById('plotDiv');
-    plotDiv.on('plotly_click', handlePlotClick);
-}
-
-function createVectorTrace(vectorRows, type) {
-    if (!vectorRows || vectorRows.length === 0) return null;
-
-    const x = [];
-    const y = [];
-    const dxScale = Math.pow(10, arrowScale);
-
-    for (const row of vectorRows) {
-        const comp = getVectorComponentsForPlot(row, type);
-        const x0 = row.x;
-        const y0 = row.z;
-        const x1 = x0 + comp.u * dxScale;
-        const y1 = y0 + comp.w * dxScale;
-
-        x.push(x0, x1, null);
-        y.push(y0, y1, null);
-    }
-
-    return {
-        type: 'scatter',
-        mode: 'lines',
-        x,
-        y,
-        line: { color: arrowColor, width: 1 },
-        hoverinfo: 'skip'
-    };
-}
-
-function createPointTraces() {
-    return plottedPoints.map(point => ({
-        type: 'scatter',
-        mode: 'markers+text',
-        x: [point.x],
-        y: [point.z],
-        marker: {
-            color: point.color,
-            size: 10,
-            symbol: 'circle'
-        },
-        text: [point.id],
-        textposition: 'top center',
-        textfont: { color: point.color, size: 12 },
-        hovertemplate: `${point.id}<br>x: %{x:.3f} km<br>z: %{y:.3f} km<extra></extra>`
-    }));
-}
-
-function handlePlotClick(eventData) {
-    if (!eventData || !eventData.points || eventData.points.length === 0) return;
-
-    const pt = eventData.points[0];
-    const x = pt.x;
-    const z = pt.y;
-
-    const existing = plottedPoints.findIndex(p => p.id === `P${nextPointSlot}`);
-    const newPoint = {
-        id: `P${nextPointSlot}`,
-        x,
-        z,
-        color: POINT_COLORS[(nextPointSlot - 1) % POINT_COLORS.length]
-    };
-
-    if (existing >= 0) plottedPoints[existing] = newPoint;
-    else plottedPoints.push(newPoint);
-
-    nextPointSlot = nextPointSlot === 4 ? 1 : nextPointSlot + 1;
+    Plotly.newPlot('timeSeriesContainer', allTraces, layout, config);
     plotData();
-    updatePointTable();
 }
 
-function updatePointTable() {
-    const container = document.getElementById('selectedPointsList');
-    if (!container) return;
-
-    if (plottedPoints.length === 0) {
-        container.innerHTML = '<div class="helper-note">Click the plot to place up to four tracked points.</div>';
-        return;
+function clearAllPoints() {
+    for (let i = 1; i <= 4; i++) {
+        document.getElementById(`xCoord${i}`).value = '';
+        document.getElementById(`zCoord${i}`).value = '';
     }
 
-    container.innerHTML = plottedPoints.map(p => `
-        <div class="point-input-group">
-            <label>${p.id}</label>
-            <div>x = ${p.x.toFixed(3)} km, z = ${p.z.toFixed(3)} km</div>
-        </div>
-    `).join('');
-}
-
-// ============================================================
-// Time series extraction
-// ============================================================
-
-function extractTimeSeriesAtTrackedPoints() {
-    if (!fileText || timePoints.length === 0) {
-        alert('Please load a scalar file first.');
-        return;
-    }
-
-    if (plottedPoints.length === 0) {
-        alert('Please click at least one point on the plot first.');
-        return;
-    }
-
-    const variable = document.getElementById('variableSelect').value;
-    const traces = [];
-
-    let cellAreaM2 = 1.0;
-    if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
-        const firstVectorTime = vectorTimePoints[0];
-        const firstVectorRows = parseVectorTimeStepData(vectorFileText, firstVectorTime);
-        cellAreaM2 = computeTypicalCellAreaM2FromVectorRows(firstVectorRows);
-    }
-
-    for (const point of plottedPoints) {
-        const yValues = [];
-        const xValues = [];
-
-        for (const t of timePoints) {
-            const scalarRows = parseTimeStepData(fileText, t);
-            const scalarMatch = findClosestScalarPoint(scalarRows, point.x, point.z).closestPoint;
-
-            let val = NaN;
-
-            if (isDerivedVectorField(variable)) {
-                if (!vectorFileText || Object.keys(vectorTimeIndex).length === 0) {
-                    val = NaN;
-                } else {
-                    const bestVectorTime = getClosestTimeValue(t, vectorTimePoints);
-                    const vectorRows = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
-                    const vectorMatch = findClosestVectorPoint(vectorRows, point.x, point.z).closestPoint;
-                    val = computeDerivedValueAtPoint(variable, vectorMatch, scalarMatch, cellAreaM2);
-                }
-            } else if (scalarMatch) {
-                val = scalarMatch[variable];
-            }
-
-            xValues.push(t);
-            yValues.push(val);
-        }
-
-        traces.push({
-            type: 'scatter',
-            mode: 'lines+markers',
-            name: point.id,
-            x: xValues,
-            y: yValues,
-            line: { color: point.color, width: 2 },
-            marker: { color: point.color, size: 6 }
-        });
-    }
-
-    let yTitle = variable;
-    if (variable === 'temperature') yTitle = 'Temperature (°C)';
-    if (variable === 'pressure') yTitle = 'Pressure (bar)';
-    if (variable === 'saturation') yTitle = 'Saturation (-)';
-    if (variable === 'phase') yTitle = 'Phase';
-    if (variable === 'water_flux_mag') yTitle = 'Water mass-flux magnitude (g/s-cm²)';
-    if (variable === 'steam_flux_mag') yTitle = 'Steam mass-flux magnitude (g/s-cm²)';
-    if (variable === 'total_flux_mag') yTitle = 'Total mass-flux magnitude (g/s-cm²)';
-    if (variable === 'heat_flux_proxy') yTitle = 'Heat transport proxy (mW/m²)';
-    if (variable === 'heat_flux_total') yTitle = 'Total heat transport (MW)';
-
-    const layout = {
-        title: `Time series of ${variable.replaceAll('_', ' ')}`,
-        xaxis: {
-            title: 'Time (years)',
-            type: 'log',
-            gridcolor: getComputedStyle(document.documentElement).getPropertyValue('--grid-color').trim(),
-            color: getComputedStyle(document.documentElement).getPropertyValue('--text-color').trim()
-        },
-        yaxis: {
-            title: yTitle,
-            gridcolor: getComputedStyle(document.documentElement).getPropertyValue('--grid-color').trim(),
-            color: getComputedStyle(document.documentElement).getPropertyValue('--text-color').trim()
-        },
-        plot_bgcolor: getComputedStyle(document.documentElement).getPropertyValue('--plot-bg').trim(),
-        paper_bgcolor: getComputedStyle(document.documentElement).getPropertyValue('--plot-paper-bg').trim(),
-        font: {
-            color: getComputedStyle(document.documentElement).getPropertyValue('--text-color').trim()
-        },
-        margin: { l: 70, r: 20, t: 60, b: 60 },
-        showlegend: true
-    };
-
-    Plotly.newPlot('timeSeriesPlot', traces, layout, { responsive: true });
-}
-
-function clearTrackedPoints() {
     plottedPoints = [];
     nextPointSlot = 1;
-    updatePointTable();
     plotData();
+}
 
-    const tsDiv = document.getElementById('timeSeriesPlot');
-    if (tsDiv) {
-        Plotly.purge(tsDiv);
+function showTimeSeriesSection() {
+    const timeSeriesSection = document.getElementById('timeSeriesSection');
+    timeSeriesSection.style.display = 'block';
+
+    if (timePoints.length > 0) {
+        const firstTimeData = parseTimeStepData(fileText, timePoints[0]);
+        if (firstTimeData.length > 0) {
+            const samplePoints = [];
+            for (let i = 0; i < Math.min(4, firstTimeData.length); i++) {
+                const index = Math.floor(i * firstTimeData.length / 4);
+                samplePoints.push(firstTimeData[index]);
+            }
+
+            for (let i = 0; i < samplePoints.length; i++) {
+                document.getElementById(`xCoord${i + 1}`).value = samplePoints[i].x.toFixed(3);
+                document.getElementById(`zCoord${i + 1}`).value = samplePoints[i].z.toFixed(3);
+            }
+        }
     }
+
+    updatePlottedPointsFromInputs();
+}
+
+function downloadTimeSeriesCSV() {
+    if (!fileText || timePoints.length === 0) {
+        alert('Please load a data file first.');
+        return;
+    }
+
+    const points = getPointsFromInputs();
+    if (points.length === 0) {
+        alert('Please enter valid coordinates for at least one point.');
+        return;
+    }
+
+    const selectedVariable = document.getElementById('timeSeriesVariable').value;
+
+    if (isDerivedVectorField(selectedVariable) && (!vectorFileText || vectorTimePoints.length === 0)) {
+        alert('Please load a vector file first for vector-derived time series.');
+        return;
+    }
+
+    let csv = 'time';
+    for (let i = 0; i < points.length; i++) {
+        csv += `,point${i + 1}`;
+    }
+    csv += '\n';
+
+    for (const time of timePoints) {
+        const scalarTimeData = parseTimeStepData(fileText, time);
+        const bestVectorTime = isDerivedVectorField(selectedVariable)
+            ? getClosestTimeValue(time, vectorTimePoints)
+            : null;
+        const vectorTimeData = (isDerivedVectorField(selectedVariable) && bestVectorTime !== null)
+            ? parseVectorTimeStepData(vectorFileText, bestVectorTime)
+            : null;
+
+        csv += `${time}`;
+
+        for (let i = 0; i < points.length; i++) {
+            const p = points[i];
+            const scalarResult = findClosestScalarPoint(scalarTimeData, p.x, p.z);
+            let value = '';
+
+            if (scalarResult.closestPoint) {
+                if (isDerivedVectorField(selectedVariable)) {
+                    const vectorResult = vectorTimeData
+                        ? findClosestVectorPoint(vectorTimeData, p.x, p.z)
+                        : { closestPoint: null };
+
+                    if (vectorResult.closestPoint) {
+                        const localCellAreaM2 = vectorTimeData
+                            ? computeTypicalCellAreaM2FromVectorRows(vectorTimeData)
+                            : 1.0;
+
+                        value = computeDerivedValueAtPoint(
+                            selectedVariable,
+                            vectorResult.closestPoint,
+                            scalarResult.closestPoint,
+                            localCellAreaM2
+                        );
+                    }
+                } else {
+                    value = scalarResult.closestPoint[selectedVariable];
+                }
+            }
+
+            csv += `,${value}`;
+        }
+
+        csv += '\n';
+    }
+
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'time_series.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }
 
 // ============================================================
@@ -1209,185 +1208,421 @@ function clearTrackedPoints() {
 
 async function exportGifAnimation() {
     if (!fileText || timePoints.length === 0) {
-        alert('Please load and plot a scalar file first.');
+        alert('Please load a data file first.');
         return;
     }
 
-    alert('GIF export in this version saves an HTML animation bundle instead of a true GIF. Use the downloaded HTML for interactive playback.');
-    exportAnimationHTML();
+    const frameStep = Math.max(1, parseInt(document.getElementById('gifFrameStep').value) || 1);
+    const resString = document.getElementById('gifResolution').value || '900x600';
+    const [width, height] = resString.split('x').map(Number);
+    const plotDiv = document.getElementById('plotContainer');
+    const nFrames = timePoints.length;
+    const folderName = `plot_frames_${Date.now()}`;
+    const zip = new JSZip();
+    zip.folder(folderName);
+
+    let progressDiv = document.getElementById('gifExportProgress');
+    if (!progressDiv) {
+        progressDiv = document.createElement('div');
+        progressDiv.id = 'gifExportProgress';
+        progressDiv.style = 'color: #fff; background: #222; padding: 10px; border-radius: 8px; margin: 10px 0;';
+        plotDiv.parentNode.insertBefore(progressDiv, plotDiv);
+    }
+
+    let nExported = 0;
+    for (let i = 0; i < nFrames; i += frameStep) {
+        currentTimeIndex = i;
+        await plotData();
+        await new Promise(r => setTimeout(r, 100));
+
+        const pngDataUrl = await Plotly.toImage(plotDiv, { format: 'png', width, height });
+        const res = await fetch(pngDataUrl);
+        const blob = await res.blob();
+
+        const filename = `${folderName}/frame_${String(i).padStart(3, '0')}.png`;
+        zip.file(filename, blob);
+
+        nExported++;
+        progressDiv.textContent = `Exported frame ${nExported} (step ${i + 1} of ${nFrames})`;
+        await new Promise(r => setTimeout(r, 100));
+    }
+
+    progressDiv.textContent = `Zipping frames...`;
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    saveAs(zipBlob, `${folderName}.zip`);
+    progressDiv.textContent = `Done! Unzip ${folderName}.zip, then run: convert -delay 5 *.png screens.gif`;
+    setTimeout(() => progressDiv.remove(), 15000);
 }
 
-function exportAnimationHTML() {
-    if (!fileText || timePoints.length === 0) {
-        alert('Please load and plot a scalar file first.');
-        return;
+// ============================================================
+
+async function plotData() {
+    if (!fileText || timePoints.length === 0) return;
+
+    const variableSelect = document.getElementById('variableSelect');
+    const colormapSelect = document.getElementById('colormapSelect');
+    const selectedVariable = variableSelect.value;
+    const selectedColormap = colormapSelect.value;
+    const currentTime = timePoints[currentTimeIndex];
+
+    const timeData = parseTimeStepData(fileText, currentTime);
+    if (timeData.length === 0) return;
+
+    if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
+        const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
+        vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
     }
 
-    const variable = document.getElementById('variableSelect').value;
-    const colorscale = document.getElementById('colormapSelect').value;
-    const frameStep = Math.max(1, parseInt(document.getElementById('gifFrameStep').value || '1'));
-    const selectedTimes = timePoints.filter((_, i) => i % frameStep === 0);
-
-    const frames = [];
-    let zTitle = variable;
-
-    for (const t of selectedTimes) {
-        const timeData = parseTimeStepData(fileText, t);
-        let plotRows = [];
-
-        if (isDerivedVectorField(variable)) {
-            if (!vectorFileText || Object.keys(vectorTimeIndex).length === 0) continue;
-            const bestVectorTime = getClosestTimeValue(t, vectorTimePoints);
-            const vectorRows = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
-            const tempLookup = buildTemperatureLookup(timeData);
-            plotRows = deriveVectorField(vectorRows, variable, tempLookup);
-        } else {
-            plotRows = timeData.map(row => ({ x: row.x, y: row.z, z: row[variable] }));
+    let meshData;
+    if (isDerivedVectorField(selectedVariable)) {
+        if (!vectorData || vectorData.length === 0) {
+            alert('Please load a vector file to plot vector-derived quantities.');
+            return;
         }
 
-        const mesh = createMeshGridFromXYZ(plotRows);
-        frames.push({
-            name: `t_${t}`,
-            data: [{
-                type: 'heatmap',
-                x: mesh.x,
-                y: mesh.y,
-                z: mesh.z,
-                colorscale: colorscale,
-                zmin: customColorbarRange ? customColorbarRange.min : currentDataRange.min,
-                zmax: customColorbarRange ? customColorbarRange.max : currentDataRange.max
-            }]
+        const tempLookup = buildTemperatureLookup(timeData);
+        const derivedRows = deriveVectorField(vectorData, selectedVariable, tempLookup);
+        meshData = createMeshGridFromXYZ(derivedRows);
+    } else {
+        meshData = createMeshGrid(timeData, selectedVariable);
+    }
+
+    const allValues = meshData.z.flat().filter(val => !isNaN(val) && isFinite(val));
+    if (allValues.length > 0) {
+        currentDataRange = {
+            min: Math.min(...allValues),
+            max: Math.max(...allValues)
+        };
+    }
+
+    if (meshData.x.length > 0 && meshData.y.length > 0) {
+        currentXRange = {
+            min: Math.min(...meshData.x),
+            max: Math.max(...meshData.x)
+        };
+        currentZRange = {
+            min: Math.min(...meshData.y),
+            max: Math.max(...meshData.y)
+        };
+    }
+
+    const colorbarRange = customColorbarRange || currentDataRange;
+    const xAxisRange = customXRange || currentXRange;
+    const zAxisRange = customZRange || currentZRange;
+
+    const traces = [];
+
+    const heatmapTrace = {
+        z: meshData.z,
+        x: meshData.x,
+        y: meshData.y,
+        type: 'heatmap',
+        colorscale: selectedColormap,
+        zmin: colorbarRange.min,
+        zmax: colorbarRange.max,
+        colorbar: {
+            title: getVariableLabel(selectedVariable),
+            titleside: 'right',
+            tickfont: { color: currentTheme === 'dark' ? '#ffffff' : '#222222' },
+            titlefont: { color: currentTheme === 'dark' ? '#ffffff' : '#222222' }
+        },
+        hoverongaps: false,
+        hovertemplate:
+            'X: %{x:.3f} km<br>' +
+            'Z: %{y:.3f} km<br>' +
+            `${getVariableLabel(selectedVariable)}: %{z:.3f}<br>` +
+            '<extra></extra>'
+    };
+    traces.push(heatmapTrace);
+
+    if (plottedPoints.length > 0) {
+        for (let i = 0; i < plottedPoints.length; i++) {
+            const point = plottedPoints[i];
+            traces.push({
+                x: [point.x],
+                y: [point.z],
+                type: 'scatter',
+                mode: 'markers+text',
+                marker: {
+                    size: 12,
+                    color: point.color,
+                    line: {
+                        color: 'white',
+                        width: 2
+                    },
+                    symbol: 'circle'
+                },
+                text: [`P${point.id}`],
+                textposition: 'top center',
+                textfont: { color: point.color, size: 12 },
+                name: `Point ${point.id} (${point.x.toFixed(3)}, ${point.z.toFixed(3)})`,
+                showlegend: false,
+                hovertemplate:
+                    `Point ${point.id}<br>` +
+                    'X: %{x:.3f} km<br>' +
+                    'Z: %{y:.3f} km<br>' +
+                    '<extra></extra>'
+            });
+        }
+    }
+
+    if (vectorData && vectorData.length > 0) {
+        const sampleStep = Math.max(1, Math.floor(vectorData.length / 1000));
+        const sampledData = vectorData.filter((_, index) => index % sampleStep === 0);
+
+        let arrowX = [];
+        let arrowY = [];
+        let headX = [];
+        let headY = [];
+
+        sampledData.forEach(d => {
+            const comp = getVectorComponentsForPlot(d, vectorType);
+
+            const x0 = d.x;
+            const y0 = d.z;
+            const u = comp.u;
+            const v = comp.w;
+
+            const mag = Math.sqrt(u * u + v * v);
+            if (mag <= 0) return;
+
+            const logMag = Math.log10(mag + 1e-30);
+            const shiftedMag = logMag + 12;
+
+            const ux = u / mag;
+            const uy = v / mag;
+
+            const scale = Math.pow(10, arrowScale);
+            const length = Math.max(0.001, shiftedMag) * scale;
+
+            if (!isFinite(length) || length <= 0) return;
+
+            const x1 = x0 + ux * length;
+            const y1 = y0 + uy * length;
+
+            arrowX.push(x0, x1, null);
+            arrowY.push(y0, y1, null);
+
+            const dx = x1 - x0;
+            const dy = y1 - y0;
+            const len = Math.sqrt(dx * dx + dy * dy);
+
+            if (len > 0) {
+                const dirx = dx / len;
+                const diry = dy / len;
+                const px = -diry;
+                const py = dirx;
+                const ah = Math.min(0.5, len * 0.2);
+
+                const hx1 = x1 - dirx * ah + px * ah * 0.5;
+                const hy1 = y1 - diry * ah + py * ah * 0.5;
+                const hx2 = x1 - dirx * ah - px * ah * 0.5;
+                const hy2 = y1 - diry * ah - py * ah * 0.5;
+
+                headX.push(x1, hx1, null, x1, hx2, null);
+                headY.push(y1, hy1, null, y1, hy2, null);
+            }
         });
+
+        traces.push({
+            x: arrowX,
+            y: arrowY,
+            type: 'scatter',
+            mode: 'lines',
+            line: { color: arrowColor, width: 2 },
+            name: `${vectorType.charAt(0).toUpperCase() + vectorType.slice(1)} Flow`,
+            hoverinfo: 'skip',
+            showlegend: true
+        });
+
+        if (headX.length > 0) {
+            traces.push({
+                x: headX,
+                y: headY,
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: arrowColor, width: 2 },
+                hoverinfo: 'skip',
+                showlegend: false
+            });
+        }
     }
 
-    if (variable === 'temperature') zTitle = 'Temperature (°C)';
-    if (variable === 'pressure') zTitle = 'Pressure (bar)';
-    if (variable === 'saturation') zTitle = 'Saturation (-)';
-    if (variable === 'phase') zTitle = 'Phase';
-    if (variable === 'water_flux_mag') zTitle = 'Water mass-flux magnitude (g/s-cm²)';
-    if (variable === 'steam_flux_mag') zTitle = 'Steam mass-flux magnitude (g/s-cm²)';
-    if (variable === 'total_flux_mag') zTitle = 'Total mass-flux magnitude (g/s-cm²)';
-    if (variable === 'heat_flux_proxy') zTitle = 'Heat transport proxy (mW/m²)';
-    if (variable === 'heat_flux_total') zTitle = 'Total heat transport (MW)';
+    const layout = {
+        title: {
+            text: `${getVariableLabel(selectedVariable)} at Time: ${currentTime.toFixed(5)} years`,
+            font: { size: 18, color: currentTheme === 'dark' ? '#ffffff' : '#333333' }
+        },
+        xaxis: {
+            title: 'X (km)',
+            range: [xAxisRange.min, xAxisRange.max],
+            gridcolor: currentTheme === 'dark' ? '#444' : 'lightgray',
+            zeroline: false,
+            color: currentTheme === 'dark' ? '#ffffff' : '#333333',
+            tickfont: { color: currentTheme === 'dark' ? '#ffffff' : '#333333' }
+        },
+        yaxis: {
+            title: 'Z (km)',
+            range: [zAxisRange.min, zAxisRange.max],
+            gridcolor: currentTheme === 'dark' ? '#444' : 'lightgray',
+            zeroline: false,
+            color: currentTheme === 'dark' ? '#ffffff' : '#333333',
+            tickfont: { color: currentTheme === 'dark' ? '#ffffff' : '#333333' }
+        },
+        plot_bgcolor: currentTheme === 'dark' ? '#1a1a1a' : 'white',
+        paper_bgcolor: currentTheme === 'dark' ? '#1a1a1a' : 'white',
+        margin: { l: 60, r: 60, t: 80, b: 60 },
+        height: 500,
+        width: null,
+        autosize: true
+    };
 
-    const firstFrame = frames[0];
-    if (!firstFrame) {
-        alert('No frames available for export.');
-        return;
-    }
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d'],
+        displaylogo: false,
+        useResizeHandler: true
+    };
 
-    const html = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>HYDROTHERM Animation</title>
-<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-<style>body{margin:0;background:#111;color:#fff;font-family:Arial,sans-serif;}#plot{width:100vw;height:100vh;}</style>
-</head>
-<body>
-<div id="plot"></div>
-<script>
-const frames = ${JSON.stringify(frames)};
-const layout = {
-  title: 'HYDROTHERM animation',
-  xaxis: {title: 'X (km)'},
-  yaxis: {title: 'Z (km)', scaleanchor: 'x', scaleratio: 1},
-  paper_bgcolor: '#111', plot_bgcolor: '#111', font: {color: '#fff'}
-};
-Plotly.newPlot('plot', firstFrame.data, layout).then(() => {
-  Plotly.addFrames('plot', frames);
-  Plotly.animate('plot', null, {
-    frame: {duration: 50, redraw: true},
-    transition: {duration: 0},
-    mode: 'immediate'
-  });
-});
-</script>
-</body>
-</html>`;
+    Plotly.newPlot('plotContainer', traces, layout, config);
+    setupPlotClickSelection();
 
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-    saveAs(blob, 'hydrotherm_animation.html');
+    updateRangeDisplay();
+    updateXRangeDisplay();
+    updateZRangeDisplay();
 }
 
-// ============================================================
-// Input-file converter for PRINT 6 blocks
-// ============================================================
+function createMeshGrid(data, variable) {
+    const xCoords = [...new Set(data.map(row => row.x))].sort((a, b) => a - b);
+    const zCoords = [...new Set(data.map(row => row.z))].sort((a, b) => a - b);
 
-let convertedPrint6Text = null;
+    const zMatrix = [];
+
+    for (let i = 0; i < zCoords.length; i++) {
+        const row = [];
+        for (let j = 0; j < xCoords.length; j++) {
+            const point = data.find(d =>
+                Math.abs(d.x - xCoords[j]) < 1e-10 &&
+                Math.abs(d.z - zCoords[i]) < 1e-10
+            );
+
+            if (point) {
+                row.push(point[variable]);
+            } else {
+                row.push(NaN);
+            }
+        }
+        zMatrix.push(row);
+    }
+
+    return {
+        x: xCoords,
+        y: zCoords,
+        z: zMatrix
+    };
+}
+
+function setupPlotClickSelection() {
+    const plotDiv = document.getElementById('plotContainer');
+    if (!plotDiv || !plotDiv.on) return;
+
+    plotDiv.on('plotly_click', function (eventData) {
+        if (!eventData || !eventData.points || eventData.points.length === 0) return;
+
+        const clicked = eventData.points[0];
+        const x = clicked.x;
+        const z = clicked.y;
+
+        if (!isFinite(x) || !isFinite(z)) return;
+
+        const currentTime = timePoints[currentTimeIndex];
+        const timeData = parseTimeStepData(fileText, currentTime);
+        const { closestPoint } = findClosestScalarPoint(timeData, x, z);
+
+        if (!closestPoint) return;
+
+        const slot = nextPointSlot;
+        document.getElementById(`xCoord${slot}`).value = closestPoint.x.toFixed(3);
+        document.getElementById(`zCoord${slot}`).value = closestPoint.z.toFixed(3);
+
+        nextPointSlot = slot === 4 ? 1 : slot + 1;
+
+        updatePlottedPointsFromInputs();
+        plotData();
+    });
+}
+
+function normalizeHydrothermText(text) {
+    if (text.includes("\\n") || text.includes("\\r")) {
+        return text
+            .replace(/\\r\\n/g, "\n")
+            .replace(/\\n/g, "\n")
+            .replace(/\\r/g, "\r");
+    }
+    return text;
+}
 
 function detectNewline(text) {
-    return text.includes('\r\n') ? '\r\n' : '\n';
+    return text.includes("\r\n") ? "\r\n" : "\n";
 }
 
-function escapeRegExp(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function normalizePrint6Value(raw) {
-    const value = String(raw ?? '').trim();
-    if (!value) return '1';
-    return value;
-}
-
-function buildPrint6Replacement(tstep, newline) {
-    return [
-        '# PRINT 6',
-        '# .. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type[I],time_series_pr_intrv',
-        `     ${tstep}     ${tstep}     6     0`
-    ].join(newline);
+function formatPrint6DataLine(tstep) {
+    // Keep a fixed leading indent and explicit spacing between fields.
+    // This is safer for HYDROTHERM-style Fortran input than rebuilding with tabs.
+    return `     ${tstep}     ${tstep}     6     0`;
 }
 
 function convertPrint6Blocks(text, tstep) {
-    const newline = detectNewline(text);
-    const replacementBase = buildPrint6Replacement(tstep, newline);
+    const normalized = normalizeHydrothermText(text);
+    const newline = detectNewline(normalized);
+    const lines = normalized.split(/\r?\n/);
 
-    const lines = text.split(/\r?\n/);
     const out = [];
     let i = 0;
+    let replacements = 0;
 
     while (i < lines.length) {
         const line = lines[i];
-        const trimmed = line.trim();
 
-        if (trimmed === '# PRINT 6') {
-            out.push('# PRINT 6');
-            out.push('# .. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type[I],time_series_pr_intrv');
-            out.push(`     ${tstep}     ${tstep}     6     0`);
+        if (/^\s*#\s*PRINT\s+6\s*$/i.test(line)) {
+            replacements += 1;
 
+            // 1) Keep the PRINT 6 header exactly as a clean canonical line
+            out.push("# PRINT 6");
+
+            // 2) Keep/restore the descriptor line in the expected HYDROTHERM form
             i += 1;
+            if (i < lines.length && /^\s*#/.test(lines[i])) {
+                out.push("# .. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type[I],time_series_pr_intrv");
+                i += 1;
+            } else {
+                out.push("# .. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type[I],time_series_pr_intrv");
+            }
 
-            while (i < lines.length) {
-                const look = lines[i].trim();
+            // 3) Insert the single replacement data line
+            out.push(formatPrint6DataLine(tstep));
 
-                if (look === '# SLICE number') {
-                    out.push('# SLICE number');
-                    i += 1;
-                    break;
-                }
-
-                if (look.startsWith('#---') || look.startsWith('# ---')) {
-                    out.push(lines[i]);
-                    i += 1;
-                    break;
-                }
-
-                if (
-                    look.startsWith('# TEMP0') ||
-                    look.startsWith('# PRES0') ||
-                    look.startsWith('# XPERM') ||
-                    look.startsWith('# IPLOT') ||
-                    look.startsWith('# LAYER') ||
-                    look.startsWith('# ROCK') ||
-                    look.startsWith('# SOURCE') ||
-                    look.startsWith('# BOUND') ||
-                    (look.startsWith('#') && look !== '# .. plotscalar_pr_intrv,plotvector_pr_intrv,plotfile_type[I],time_series_pr_intrv')
-                ) {
-                    out.push(lines[i]);
-                    i += 1;
-                    break;
-                }
-
+            // 4) Skip everything else in this PRINT 6 block until the next section marker.
+            //    This removes the old data line plus any extra lines such as:
+            //    1
+            //    10 1 10
+            while (
+                i < lines.length &&
+                !/^\s*#\s*PRINT\s+[1-6]\s*$/i.test(lines[i]) &&
+                !/^\s*#\s*SLICE number\s*$/i.test(lines[i]) &&
+                !/^\s*#\s*-{3,}\s*$/.test(lines[i]) &&
+                !/^\s*#\s*\.\./.test(lines[i]) &&
+                !/^\s*#\s*\./.test(lines[i]) &&
+                !/^\s*#\s*TIME PERIOD/i.test(lines[i]) &&
+                !/^\s*#\s*UNCONFINED/i.test(lines[i]) &&
+                !/^\s*#\s*SATURATION FUNCTION/i.test(lines[i]) &&
+                !/^\s*#\s*End of Keyword Data Block section/i.test(lines[i]) &&
+                !/^\s*#\s*Insert additional groups/i.test(lines[i]) &&
+                                !/^\s*#\s*PARAMETER/i.test(lines[i]) &&
+                !/^\s*#\s*Start of /i.test(lines[i]) &&
+                !/^\s*#\s*End of /i.test(lines[i])
+            ) {
                 i += 1;
             }
 
@@ -1398,142 +1633,93 @@ function convertPrint6Blocks(text, tstep) {
         i += 1;
     }
 
-    return out.join(newline);
+    return {
+        text: out.join(newline),
+        replacements
+    };
 }
 
-async function convertInputFile() {
-    const fileInput = document.getElementById('converterFileInput');
-    const tstepInput = document.getElementById('converterTstepInput');
-    const status = document.getElementById('converterStatus');
-
-    const file = fileInput?.files?.[0];
-    if (!file) {
-        if (status) status.textContent = 'Please choose a HYDROTHERM input file.';
-        return;
-    }
-
-    const tstep = normalizePrint6Value(tstepInput?.value);
-
-    try {
-        const text = await readFileAsText(file);
-        const converted = convertPrint6Blocks(text, tstep);
-        convertedPrint6Text = converted;
-
-        const changed = converted !== text;
-        if (status) {
-            status.textContent = changed
-                ? `Converted PRINT 6 blocks successfully using tstep = ${tstep}.`
-                : 'No PRINT 6 block was found. File left unchanged.';
-        }
-    } catch (err) {
-        console.error(err);
-        if (status) status.textContent = `Conversion failed: ${err.message}`;
-    }
-}
-
-function downloadConvertedInputFile() {
-    const fileInput = document.getElementById('converterFileInput');
-    const status = document.getElementById('converterStatus');
-
-    if (!convertedPrint6Text) {
-        if (status) status.textContent = 'Nothing to download yet. Convert a file first.';
-        return;
-    }
-
-    const originalName = fileInput?.files?.[0]?.name || 'hydrotherm_input.txt';
-    const dot = originalName.lastIndexOf('.');
-    const outName = dot > 0
-        ? `${originalName.slice(0, dot)}_print6_fixed${originalName.slice(dot)}`
-        : `${originalName}_print6_fixed.txt`;
-
-    const blob = new Blob([convertedPrint6Text], { type: 'text/plain;charset=utf-8' });
-    saveAs(blob, outName);
-
-    if (status) status.textContent = `Downloaded ${outName}`;
-}
 
 // ============================================================
-// Utilities
-// ============================================================
-
-function readFileAsText(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = e => resolve(e.target.result);
-        reader.onerror = e => reject(new Error('Failed to read file.'));
-        reader.readAsText(file);
-    });
-}
-
-function applyTheme(theme) {
-    document.body.setAttribute('data-theme', theme);
-    currentTheme = theme;
-    if (fileText && timePoints.length > 0) {
-        plotData();
-    }
-
-    const tsDiv = document.getElementById('timeSeriesPlot');
-    if (tsDiv && tsDiv.data && tsDiv.data.length > 0) {
-        extractTimeSeriesAtTrackedPoints();
-    }
-}
-
-// ============================================================
-// Event wiring
+// Events
 // ============================================================
 
 document.addEventListener('DOMContentLoaded', function () {
-    const themeSelect = document.getElementById('themeSelect');
-    if (themeSelect) {
-        themeSelect.addEventListener('change', function () {
-            applyTheme(this.value);
-        });
-    }
-
-    const vectorFileInput = document.getElementById('vectorFileInput');
-    if (vectorFileInput) {
-        vectorFileInput.addEventListener('change', loadVectorFile);
-    }
-
-    const clearVectorsBtn = document.getElementById('clearVectorsBtn');
-    if (clearVectorsBtn) {
-        clearVectorsBtn.addEventListener('click', clearVectors);
-    }
-
-    const extractTsBtn = document.getElementById('extractTimeSeriesBtn');
-    if (extractTsBtn) {
-        extractTsBtn.addEventListener('click', extractTimeSeriesAtTrackedPoints);
-    }
-
-    const clearPointsBtn = document.getElementById('clearPointsBtn');
-    if (clearPointsBtn) {
-        clearPointsBtn.addEventListener('click', clearTrackedPoints);
-    }
-
     const variableSelect = document.getElementById('variableSelect');
+    const colormapSelect = document.getElementById('colormapSelect');
+    const themeSelect = document.getElementById('themeSelect');
+    const downloadTimeSeriesBtn = document.getElementById('downloadTimeSeriesBtn');
+
     if (variableSelect) {
         variableSelect.addEventListener('change', function () {
-            if (fileText && timePoints.length > 0) plotData();
+            if (fileText) {
+                customColorbarRange = null;
+                customXRange = null;
+                customZRange = null;
+                if ($("#slider-range").length) $("#slider-range").slider("values", [0, 100]);
+                if ($("#x-slider-range").length) $("#x-slider-range").slider("values", [0, 100]);
+                if ($("#z-slider-range").length) $("#z-slider-range").slider("values", [0, 100]);
+                plotData();
+            }
         });
     }
 
-    const colormapSelect = document.getElementById('colormapSelect');
     if (colormapSelect) {
         colormapSelect.addEventListener('change', function () {
-            if (fileText && timePoints.length > 0) plotData();
+            if (fileText) {
+                plotData();
+            }
         });
     }
 
-    const convertBtn = document.getElementById('convertInputBtn');
-    if (convertBtn) {
-        convertBtn.addEventListener('click', convertInputFile);
+    if (themeSelect) {
+        themeSelect.addEventListener('change', function () {
+            currentTheme = this.value;
+            applyTheme(currentTheme);
+            if (fileText) {
+                plotData();
+                try { plotTimeSeries(); } catch (e) {}
+            }
+        });
     }
 
-    const downloadBtn = document.getElementById('downloadConvertedBtn');
-    if (downloadBtn) {
-        downloadBtn.addEventListener('click', downloadConvertedInputFile);
+    if (downloadTimeSeriesBtn) {
+        downloadTimeSeriesBtn.addEventListener('click', function () {
+            downloadTimeSeriesCSV();
+        });
     }
 
-    updatePointTable();
-    applyTheme(currentTheme);
+    applyTheme('dark');
+    initializePrint6Converter();
+
+    const arrowColorSelect = document.getElementById('arrowColorSelect');
+    if (arrowColorSelect) {
+        arrowColor = arrowColorSelect.value = '#ffffff';
+    }
+});
+
+document.addEventListener('keydown', function (e) {
+    if (!fileText) return;
+
+    const timeRange = document.getElementById('timeRange');
+    if (!timeRange) return;
+
+    const currentValue = parseInt(timeRange.value);
+
+    if (e.key === 'ArrowLeft' && currentValue > 0) {
+        timeRange.value = currentValue - 1;
+        timeRange.dispatchEvent(new Event('input'));
+    } else if (e.key === 'ArrowRight' && currentValue < timePoints.length - 1) {
+        timeRange.value = currentValue + 1;
+        timeRange.dispatchEvent(new Event('input'));
+    }
+});
+
+window.addEventListener('resize', function () {
+    if (fileText && timePoints.length > 0) {
+        clearTimeout(window.resizeTimeout);
+        window.resizeTimeout = setTimeout(() => {
+            plotData();
+        }, 250);
+    }
 });
