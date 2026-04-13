@@ -287,36 +287,56 @@ function computeDerivedValueAtPoint(fieldName, vectorPoint, scalarPoint, cellAre
 }
 
 // ============================================================
-// Robust scalar/vector row parsing
+// Robust HYDROTHERM / Fortran parsing helpers
 // ============================================================
 
+function parseHydroNumber(value) {
+    if (value === undefined || value === null) return NaN;
+
+    const normalized = String(value)
+        .trim()
+        .replace(/[dD]/g, 'E')
+        .replace(/−/g, '-')
+        .replace(/\u00A0/g, ' ')
+        .replace(/,/g, '');
+
+    if (normalized === '') return NaN;
+
+    const n = parseFloat(normalized);
+    return Number.isFinite(n) ? n : NaN;
+}
+
 function tryParseScalarRow(line) {
+    if (typeof line !== 'string') return null;
+
     const trimmed = line.trim();
     if (!trimmed) return null;
+    if (trimmed.startsWith('.')) return null;
 
     const parts = trimmed.split(/\s+/);
     if (parts.length < 8) return null;
 
-    const nums = parts.slice(0, 8).map(v => Number(v));
+    const nums = parts.slice(0, 8).map(parseHydroNumber);
     if (nums.some(v => Number.isNaN(v))) return null;
 
     const [x, y, z, time, temperature, pressure, saturation, phase] = nums;
-
     return { x, y, z, time, temperature, pressure, saturation, phase };
 }
 
 function tryParseVectorRow(line) {
+    if (typeof line !== 'string') return null;
+
     const trimmed = line.trim();
     if (!trimmed) return null;
+    if (trimmed.startsWith('.')) return null;
 
     const parts = trimmed.split(/\s+/);
     if (parts.length < 10) return null;
 
-    const nums = parts.slice(0, 10).map(v => Number(v));
+    const nums = parts.slice(0, 10).map(parseHydroNumber);
     if (nums.some(v => Number.isNaN(v))) return null;
 
     const [x, y, z, time, xw, yw, zw, xs, ys, zs] = nums;
-
     return { x, y, z, time, xw, yw, zw, xs, ys, zs };
 }
 
@@ -393,7 +413,7 @@ async function loadAndProcessFile() {
             showTimeSeriesSection();
             showLoading(false);
         } else {
-            throw new Error('No valid data found in file. Please ensure the file contains HYDROTHERM data with the expected format.');
+            throw new Error('No valid time-indexed data found in file.');
         }
     } catch (error) {
         console.error('Error processing file:', error);
@@ -403,29 +423,28 @@ async function loadAndProcessFile() {
 }
 
 function validateFileFormat(text) {
-    const lines = text.split('\n');
+    const lines = text.split(/\r?\n/);
     let validDataLines = 0;
-    let hasHeader = false;
+    const examples = [];
 
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (isLikelyScalarHeaderLine(trimmed)) {
-            hasHeader = true;
-        }
-
-        if (tryParseScalarRow(line)) {
+    for (let i = 0; i < lines.length; i++) {
+        const parsed = tryParseScalarRow(lines[i]);
+        if (parsed) {
             validDataLines++;
+            if (examples.length < 5) {
+                examples.push({ lineNumber: i + 1, raw: lines[i], parsed });
+            }
         }
     }
 
-    if (!hasHeader) {
-        return {
-            isValid: false,
-            error: 'File does not appear to contain a HYDROTHERM scalar header'
-        };
-    }
+    console.log('Scalar validation summary:', {
+        totalLines: lines.length,
+        validDataLines,
+        examples
+    });
 
     if (validDataLines === 0) {
+        console.log('First 20 raw scalar lines:', lines.slice(0, 20));
         return {
             isValid: false,
             error: 'No valid scalar data rows were found'
@@ -446,7 +465,7 @@ async function buildTimeIndex(text) {
     timeIndex = {};
     timePoints = [];
 
-    const lines = text.split('\n');
+    const lines = text.split(/\r?\n/);
     let currentTime = null;
     let startLine = null;
 
@@ -480,7 +499,7 @@ function parseTimeStepData(text, time) {
     if (!range) return [];
 
     const [start, end] = range;
-    const lines = text.split('\n').slice(start, end + 1);
+    const lines = text.split(/\r?\n/).slice(start, end + 1);
     const data = [];
 
     for (const line of lines) {
@@ -526,7 +545,9 @@ async function loadVectorFile() {
 
         const currentTime = timePoints[currentTimeIndex];
         const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
-        vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
+        vectorData = bestVectorTime !== null
+            ? parseVectorTimeStepData(vectorFileText, bestVectorTime)
+            : [];
 
         vectorType = vectorTypeSelect.value;
         arrowScale = parseFloat(arrowScaleSlider.value);
@@ -539,29 +560,28 @@ async function loadVectorFile() {
 }
 
 function validateVectorFileFormat(text) {
-    const lines = text.split('\n');
+    const lines = text.split(/\r?\n/);
     let validDataLines = 0;
-    let hasHeader = false;
+    const examples = [];
 
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (isLikelyVectorHeaderLine(trimmed)) {
-            hasHeader = true;
-        }
-
-        if (tryParseVectorRow(line)) {
+    for (let i = 0; i < lines.length; i++) {
+        const parsed = tryParseVectorRow(lines[i]);
+        if (parsed) {
             validDataLines++;
+            if (examples.length < 5) {
+                examples.push({ lineNumber: i + 1, raw: lines[i], parsed });
+            }
         }
     }
 
-    if (!hasHeader) {
-        return {
-            isValid: false,
-            error: 'File does not appear to contain a HYDROTHERM vector header'
-        };
-    }
+    console.log('Vector validation summary:', {
+        totalLines: lines.length,
+        validDataLines,
+        examples
+    });
 
     if (validDataLines === 0) {
+        console.log('First 20 raw vector lines:', lines.slice(0, 20));
         return {
             isValid: false,
             error: 'No valid vector data rows were found'
@@ -582,7 +602,7 @@ async function buildVectorTimeIndex(text) {
     vectorTimeIndex = {};
     vectorTimePoints = [];
 
-    const lines = text.split('\n');
+    const lines = text.split(/\r?\n/);
     let currentTime = null;
     let startLine = null;
 
@@ -615,7 +635,7 @@ function parseVectorTimeStepData(text, time) {
     if (!vectorTimeIndex[time]) return [];
 
     const [start, end] = vectorTimeIndex[time];
-    const lines = text.split('\n').slice(start, end + 1);
+    const lines = text.split(/\r?\n/).slice(start, end + 1);
     const data = [];
 
     for (const line of lines) {
@@ -649,7 +669,7 @@ function setupTimeSlider() {
     timeRange.max = timePoints.length - 1;
     timeRange.value = 0;
     timeRange.oninput = async function () {
-        currentTimeIndex = parseInt(this.value);
+        currentTimeIndex = parseInt(this.value, 10);
         updateTimeDisplay();
         await plotData();
     };
@@ -760,7 +780,9 @@ function setupVectorControls() {
         if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
             const currentTime = timePoints[currentTimeIndex];
             const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
-            vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
+            vectorData = bestVectorTime !== null
+                ? parseVectorTimeStepData(vectorFileText, bestVectorTime)
+                : [];
             plotData();
         }
     });
@@ -838,7 +860,11 @@ function resetAxes() {
 function updateTimeDisplay() {
     const timeDisplay = document.getElementById('timeDisplay');
     const currentTime = timePoints[currentTimeIndex];
-    timeDisplay.textContent = `Time: ${currentTime.toFixed(5)} years`;
+    if (currentTime !== undefined) {
+        timeDisplay.textContent = `Time: ${currentTime.toFixed(5)} years`;
+    } else {
+        timeDisplay.textContent = 'Time: N/A';
+    }
 }
 
 // ============================================================
@@ -855,11 +881,16 @@ async function plotData() {
     const currentTime = timePoints[currentTimeIndex];
 
     const timeData = parseTimeStepData(fileText, currentTime);
-    if (timeData.length === 0) return;
+    if (timeData.length === 0) {
+        console.warn('No scalar data found for time:', currentTime);
+        return;
+    }
 
     if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
         const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
-        vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
+        vectorData = bestVectorTime !== null
+            ? parseVectorTimeStepData(vectorFileText, bestVectorTime)
+            : [];
     }
 
     let meshData;
@@ -911,7 +942,6 @@ async function plotData() {
         zmax: colorbarRange.max,
         colorbar: {
             title: getVariableLabel(selectedVariable),
-            titleside: 'right',
             tickfont: { color: currentTheme === 'dark' ? '#ffffff' : '#222222' },
             titlefont: { color: currentTheme === 'dark' ? '#ffffff' : '#222222' }
         },
@@ -1114,7 +1144,7 @@ function createMeshGrid(data, variable) {
 
 function setupPlotClickSelection() {
     const plotDiv = document.getElementById('plotContainer');
-    if (!plotDiv) return;
+    if (!plotDiv || typeof plotDiv.on !== 'function') return;
 
     plotDiv.on('plotly_click', function (eventData) {
         if (!eventData || !eventData.points || eventData.points.length === 0) return;
@@ -1502,7 +1532,7 @@ async function exportGifAnimation() {
         return;
     }
 
-    const frameStep = Math.max(1, parseInt(document.getElementById('gifFrameStep').value) || 1);
+    const frameStep = Math.max(1, parseInt(document.getElementById('gifFrameStep').value, 10) || 1);
     const resString = document.getElementById('gifResolution').value || '900x600';
     const [width, height] = resString.split('x').map(Number);
     const plotDiv = document.getElementById('plotContainer');
@@ -1537,7 +1567,7 @@ async function exportGifAnimation() {
         await new Promise(r => setTimeout(r, 100));
     }
 
-    progressDiv.textContent = `Zipping frames...`;
+    progressDiv.textContent = 'Zipping frames...';
     const zipBlob = await zip.generateAsync({ type: 'blob' });
     saveAs(zipBlob, `${folderName}.zip`);
     progressDiv.textContent = `Done! Unzip ${folderName}.zip, then run: convert -delay 5 *.png screens.gif`;
@@ -1577,7 +1607,9 @@ document.addEventListener('DOMContentLoaded', function () {
         applyTheme(currentTheme);
         if (fileText) {
             plotData();
-            plotTimeSeries();
+            if (document.getElementById('timeSeriesSection').style.display !== 'none') {
+                plotTimeSeries();
+            }
         }
     });
 
@@ -1596,10 +1628,10 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 document.addEventListener('keydown', function (e) {
-    if (!fileText) return;
+    if (!fileText || timePoints.length === 0) return;
 
     const timeRange = document.getElementById('timeRange');
-    const currentValue = parseInt(timeRange.value);
+    const currentValue = parseInt(timeRange.value, 10);
 
     if (e.key === 'ArrowLeft' && currentValue > 0) {
         timeRange.value = currentValue - 1;
