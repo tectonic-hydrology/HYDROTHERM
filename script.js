@@ -287,6 +287,79 @@ function computeDerivedValueAtPoint(fieldName, vectorPoint, scalarPoint, cellAre
 }
 
 // ============================================================
+// Robust scalar/vector row parsing
+// ============================================================
+
+function tryParseScalarRow(line) {
+    const trimmed = line.trim();
+    if (!trimmed) return null;
+
+    const parts = trimmed.split(/\s+/);
+    if (parts.length < 8) return null;
+
+    const nums = parts.slice(0, 8).map(v => Number(v));
+    if (nums.some(v => Number.isNaN(v))) return null;
+
+    const [x, y, z, time, temperature, pressure, saturation, phase] = nums;
+
+    return { x, y, z, time, temperature, pressure, saturation, phase };
+}
+
+function tryParseVectorRow(line) {
+    const trimmed = line.trim();
+    if (!trimmed) return null;
+
+    const parts = trimmed.split(/\s+/);
+    if (parts.length < 10) return null;
+
+    const nums = parts.slice(0, 10).map(v => Number(v));
+    if (nums.some(v => Number.isNaN(v))) return null;
+
+    const [x, y, z, time, xw, yw, zw, xs, ys, zs] = nums;
+
+    return { x, y, z, time, xw, yw, zw, xs, ys, zs };
+}
+
+function isLikelyScalarHeaderLine(trimmed) {
+    if (!trimmed) return true;
+
+    const lower = trimmed.toLowerCase();
+
+    return (
+        trimmed.startsWith('.') ||
+        lower.includes('(km)') ||
+        lower.includes('(yr)') ||
+        lower.includes('(deg.c)') ||
+        lower.includes('(bar)') ||
+        lower.includes('phase index') ||
+        lower.includes('cell nusselt') ||
+        lower.includes('temperature') ||
+        lower.includes('pressure') ||
+        lower.includes('saturation')
+    );
+}
+
+function isLikelyVectorHeaderLine(trimmed) {
+    if (!trimmed) return true;
+
+    const lower = trimmed.toLowerCase();
+
+    return (
+        trimmed.startsWith('.') ||
+        lower.includes('(km)') ||
+        lower.includes('(yr)') ||
+        lower.includes('(g/s-cm^2)') ||
+        lower.includes('mass flux') ||
+        lower.includes('x water') ||
+        lower.includes('y water') ||
+        lower.includes('z water') ||
+        lower.includes('x steam') ||
+        lower.includes('y steam') ||
+        lower.includes('z steam')
+    );
+}
+
+// ============================================================
 // File loading and validation
 // ============================================================
 
@@ -298,9 +371,8 @@ async function loadAndProcessFile() {
         return;
     }
 
-    if (!file.name.startsWith('Plot_scalar.')) {
-        alert('Invalid file name. Please select a file that begins with "Plot_scalar."');
-        return;
+    if (!/plot[_ ]?scalar/i.test(file.name)) {
+        console.warn('Filename does not match expected Plot_scalar pattern:', file.name);
     }
 
     showLoading(true);
@@ -332,73 +404,31 @@ async function loadAndProcessFile() {
 
 function validateFileFormat(text) {
     const lines = text.split('\n');
-    let dataLines = 0;
     let validDataLines = 0;
     let hasHeader = false;
 
     for (const line of lines) {
         const trimmed = line.trim();
-        if (trimmed.includes('x') || trimmed.includes('(km)') ||
-            trimmed.includes('(yr)') || trimmed.includes('(Deg.C)') ||
-            trimmed.includes('(bar)') || trimmed.includes('(-)')) {
+        if (isLikelyScalarHeaderLine(trimmed)) {
             hasHeader = true;
-            break;
-        }
-    }
-
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('.') || trimmed.includes('(km)') ||
-            trimmed.includes('(yr)') || trimmed.includes('(Deg.C)') ||
-            trimmed.includes('(bar)') || trimmed.includes('(-)') || trimmed.includes('No.')) {
-            continue;
         }
 
-        dataLines++;
-        const parts = trimmed.split(/\s+/);
-        if (parts.length >= 8) {
-            const x = parseFloat(parts[0]);
-            const y = parseFloat(parts[1]);
-            const z = parseFloat(parts[2]);
-            const time = parseFloat(parts[3]);
-            const temp = parseFloat(parts[4]);
-            const pressure = parseFloat(parts[5]);
-            const saturation = parseFloat(parts[6]);
-            const phase = parseFloat(parts[7]);
-
-            if (!isNaN(x) && !isNaN(y) && !isNaN(z) && !isNaN(time) &&
-                !isNaN(temp) && !isNaN(pressure) && !isNaN(saturation) && !isNaN(phase)) {
-                validDataLines++;
-            }
+        if (tryParseScalarRow(line)) {
+            validDataLines++;
         }
     }
 
     if (!hasHeader) {
         return {
             isValid: false,
-            error: 'File does not contain HYDROTHERM header information'
-        };
-    }
-
-    if (dataLines === 0) {
-        return {
-            isValid: false,
-            error: 'File does not contain any data lines'
+            error: 'File does not appear to contain a HYDROTHERM scalar header'
         };
     }
 
     if (validDataLines === 0) {
         return {
             isValid: false,
-            error: 'File contains data lines but none match the expected HYDROTHERM scalar format'
-        };
-    }
-
-    const validPercentage = (validDataLines / dataLines) * 100;
-    if (validPercentage < 50) {
-        return {
-            isValid: false,
-            error: `File format appears incorrect. Only ${validPercentage.toFixed(1)}% of data lines match the expected HYDROTHERM format`
+            error: 'No valid scalar data rows were found'
         };
     }
 
@@ -407,9 +437,7 @@ function validateFileFormat(text) {
         error: null,
         stats: {
             totalLines: lines.length,
-            dataLines,
-            validDataLines,
-            validPercentage
+            validDataLines
         }
     };
 }
@@ -417,40 +445,30 @@ function validateFileFormat(text) {
 async function buildTimeIndex(text) {
     timeIndex = {};
     timePoints = [];
-    let currentTime = null;
-    let startLine = 0;
-    let lineNum = 0;
+
     const lines = text.split('\n');
+    let currentTime = null;
+    let startLine = null;
 
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('.') || trimmed.includes('(km)') ||
-            trimmed.includes('(yr)') || trimmed.includes('(Deg.C)') ||
-            trimmed.includes('(bar)') || trimmed.includes('(-)') || trimmed.includes('No.')) {
-            lineNum++;
-            continue;
-        }
+    for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+        const row = tryParseScalarRow(lines[lineNum]);
+        if (!row) continue;
 
-        const parts = trimmed.split(/\s+/);
-        if (parts.length >= 8) {
-            const time = parseFloat(parts[3]);
-            if (!isNaN(time)) {
-                if (currentTime === null) {
-                    currentTime = time;
-                    startLine = lineNum;
-                } else if (time !== currentTime) {
-                    timeIndex[currentTime] = [startLine, lineNum - 1];
-                    timePoints.push(currentTime);
-                    currentTime = time;
-                    startLine = lineNum;
-                }
-            }
+        const time = row.time;
+
+        if (currentTime === null) {
+            currentTime = time;
+            startLine = lineNum;
+        } else if (time !== currentTime) {
+            timeIndex[currentTime] = [startLine, lineNum - 1];
+            timePoints.push(currentTime);
+            currentTime = time;
+            startLine = lineNum;
         }
-        lineNum++;
     }
 
-    if (currentTime !== null) {
-        timeIndex[currentTime] = [startLine, lineNum - 1];
+    if (currentTime !== null && startLine !== null) {
+        timeIndex[currentTime] = [startLine, lines.length - 1];
         timePoints.push(currentTime);
     }
 
@@ -466,25 +484,11 @@ function parseTimeStepData(text, time) {
     const data = [];
 
     for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
+        const row = tryParseScalarRow(line);
+        if (!row) continue;
 
-        const parts = trimmed.split(/\s+/);
-        if (parts.length >= 8) {
-            const x = parseFloat(parts[0]);
-            const y = parseFloat(parts[1]);
-            const z = parseFloat(parts[2]);
-            const timeVal = parseFloat(parts[3]);
-            const temperature = parseFloat(parts[4]);
-            const pressure = parseFloat(parts[5]);
-            const saturation = parseFloat(parts[6]);
-            const phase = parseFloat(parts[7]);
-
-            if (!isNaN(x) && !isNaN(y) && !isNaN(z) && !isNaN(timeVal) &&
-                !isNaN(temperature) && !isNaN(pressure) &&
-                !isNaN(saturation) && !isNaN(phase)) {
-                data.push({ x, y, z, time: timeVal, temperature, pressure, saturation, phase });
-            }
+        if (row.time === time) {
+            data.push(row);
         }
     }
 
@@ -506,9 +510,8 @@ async function loadVectorFile() {
         return;
     }
 
-    if (!file.name.startsWith('Plot_vector.')) {
-        alert('Invalid file name. Please select a file that begins with "Plot_vector."');
-        return;
+    if (!/plot[_ ]?vector/i.test(file.name)) {
+        console.warn('Filename does not match expected Plot_vector pattern:', file.name);
     }
 
     try {
@@ -537,78 +540,31 @@ async function loadVectorFile() {
 
 function validateVectorFileFormat(text) {
     const lines = text.split('\n');
-    let dataLines = 0;
     let validDataLines = 0;
     let hasHeader = false;
 
     for (const line of lines) {
-        const trimmed = line.trim().toLowerCase();
-        if (trimmed.includes('(km)') || trimmed.includes('(yr)') ||
-            trimmed.includes('mass flux') || trimmed.includes('(g/s-cm^2)') ||
-            trimmed.includes('x steam') || trimmed.includes('x water')) {
-            hasHeader = true;
-            break;
-        }
-    }
-
-    for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('.') || trimmed.includes('(km)') ||
-            trimmed.includes('(yr)') || trimmed.includes('(g/s-cm^2)') ||
-            trimmed.includes('No.')) {
-            continue;
+        if (isLikelyVectorHeaderLine(trimmed)) {
+            hasHeader = true;
         }
 
-        dataLines++;
-        const parts = trimmed.split(/\s+/);
-
-        if (parts.length >= 10) {
-            const x = parseFloat(parts[0]);
-            const y = parseFloat(parts[1]);
-            const z = parseFloat(parts[2]);
-            const time = parseFloat(parts[3]);
-
-            const xw = parseFloat(parts[4]);
-            const yw = parseFloat(parts[5]);
-            const zw = parseFloat(parts[6]);
-            const xs = parseFloat(parts[7]);
-            const ys = parseFloat(parts[8]);
-            const zs = parseFloat(parts[9]);
-
-            if (!isNaN(x) && !isNaN(y) && !isNaN(z) && !isNaN(time) &&
-                !isNaN(xw) && !isNaN(yw) && !isNaN(zw) &&
-                !isNaN(xs) && !isNaN(ys) && !isNaN(zs)) {
-                validDataLines++;
-            }
+        if (tryParseVectorRow(line)) {
+            validDataLines++;
         }
     }
 
     if (!hasHeader) {
         return {
             isValid: false,
-            error: 'File does not contain vector header information'
-        };
-    }
-
-    if (dataLines === 0) {
-        return {
-            isValid: false,
-            error: 'File does not contain any data lines'
+            error: 'File does not appear to contain a HYDROTHERM vector header'
         };
     }
 
     if (validDataLines === 0) {
         return {
             isValid: false,
-            error: 'File contains data lines but none match the expected vector format'
-        };
-    }
-
-    const validPercentage = (validDataLines / dataLines) * 100;
-    if (validPercentage < 50) {
-        return {
-            isValid: false,
-            error: `File format appears incorrect. Only ${validPercentage.toFixed(1)}% of data lines match the expected vector format`
+            error: 'No valid vector data rows were found'
         };
     }
 
@@ -617,9 +573,7 @@ function validateVectorFileFormat(text) {
         error: null,
         stats: {
             totalLines: lines.length,
-            dataLines,
-            validDataLines,
-            validPercentage
+            validDataLines
         }
     };
 }
@@ -627,40 +581,30 @@ function validateVectorFileFormat(text) {
 async function buildVectorTimeIndex(text) {
     vectorTimeIndex = {};
     vectorTimePoints = [];
-    let currentTime = null;
-    let startLine = 0;
-    let lineNum = 0;
+
     const lines = text.split('\n');
+    let currentTime = null;
+    let startLine = null;
 
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('.') || trimmed.includes('(km)') ||
-            trimmed.includes('(yr)') || trimmed.includes('(g/s-cm^2)') ||
-            trimmed.includes('No.')) {
-            lineNum++;
-            continue;
-        }
+    for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+        const row = tryParseVectorRow(lines[lineNum]);
+        if (!row) continue;
 
-        const parts = trimmed.split(/\s+/);
-        if (parts.length >= 10) {
-            const time = parseFloat(parts[3]);
-            if (!isNaN(time)) {
-                if (currentTime === null) {
-                    currentTime = time;
-                    startLine = lineNum;
-                } else if (time !== currentTime) {
-                    vectorTimeIndex[currentTime] = [startLine, lineNum - 1];
-                    vectorTimePoints.push(currentTime);
-                    currentTime = time;
-                    startLine = lineNum;
-                }
-            }
+        const time = row.time;
+
+        if (currentTime === null) {
+            currentTime = time;
+            startLine = lineNum;
+        } else if (time !== currentTime) {
+            vectorTimeIndex[currentTime] = [startLine, lineNum - 1];
+            vectorTimePoints.push(currentTime);
+            currentTime = time;
+            startLine = lineNum;
         }
-        lineNum++;
     }
 
-    if (currentTime !== null) {
-        vectorTimeIndex[currentTime] = [startLine, lineNum - 1];
+    if (currentTime !== null && startLine !== null) {
+        vectorTimeIndex[currentTime] = [startLine, lines.length - 1];
         vectorTimePoints.push(currentTime);
     }
 
@@ -675,33 +619,11 @@ function parseVectorTimeStepData(text, time) {
     const data = [];
 
     for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
+        const row = tryParseVectorRow(line);
+        if (!row) continue;
 
-        const parts = trimmed.split(/\s+/);
-        if (parts.length < 10) continue;
-
-        const x = parseFloat(parts[0]);
-        const y = parseFloat(parts[1]);
-        const z = parseFloat(parts[2]);
-        const timeVal = parseFloat(parts[3]);
-
-        const xw = parseFloat(parts[4]);
-        const yw = parseFloat(parts[5]);
-        const zw = parseFloat(parts[6]);
-
-        const xs = parseFloat(parts[7]);
-        const ys = parseFloat(parts[8]);
-        const zs = parseFloat(parts[9]);
-
-        if (!isNaN(x) && !isNaN(y) && !isNaN(z) && !isNaN(timeVal) &&
-            !isNaN(xw) && !isNaN(yw) && !isNaN(zw) &&
-            !isNaN(xs) && !isNaN(ys) && !isNaN(zs)) {
-            data.push({
-                x, y, z, time: timeVal,
-                xw, yw, zw,
-                xs, ys, zs
-            });
+        if (row.time === time) {
+            data.push(row);
         }
     }
 
@@ -1053,18 +975,13 @@ async function plotData() {
             const mag = Math.sqrt(u * u + v * v);
             if (mag <= 0) return;
 
-            // Use log magnitude but preserve small values
             const logMag = Math.log10(mag + 1e-30);
-
-            // Shift so smallest values are still visible
-            const shiftedMag = logMag + 12; // assumes typical range ~1e-12 to 1
+            const shiftedMag = logMag + 12;
 
             const ux = u / mag;
             const uy = v / mag;
 
             const scale = Math.pow(10, arrowScale);
-
-            // length always positive
             const length = Math.max(0.001, shiftedMag) * scale;
 
             if (!isFinite(length) || length <= 0) return;
