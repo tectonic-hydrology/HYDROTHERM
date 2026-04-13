@@ -294,6 +294,7 @@ function parseHydroNumber(value) {
     if (value === undefined || value === null) return NaN;
 
     const normalized = String(value)
+        .replace(/\u0000/g, '')   // strip NUL characters
         .trim()
         .replace(/[dD]/g, 'E')
         .replace(/−/g, '-')
@@ -309,11 +310,17 @@ function parseHydroNumber(value) {
 function tryParseScalarRow(line) {
     if (typeof line !== 'string') return null;
 
-    const trimmed = line.trim();
+    const cleaned = line.replace(/\u0000/g, '');
+    const trimmed = cleaned.trim();
+
     if (!trimmed) return null;
     if (trimmed.startsWith('.')) return null;
 
-    const parts = trimmed.split(/\s+/);
+    const parts = trimmed
+        .replace(/\u00A0/g, ' ')
+        .split(/[\t ]+/)
+        .filter(Boolean);
+
     if (parts.length < 8) return null;
 
     const nums = parts.slice(0, 8).map(parseHydroNumber);
@@ -326,11 +333,17 @@ function tryParseScalarRow(line) {
 function tryParseVectorRow(line) {
     if (typeof line !== 'string') return null;
 
-    const trimmed = line.trim();
+    const cleaned = line.replace(/\u0000/g, '');
+    const trimmed = cleaned.trim();
+
     if (!trimmed) return null;
     if (trimmed.startsWith('.')) return null;
 
-    const parts = trimmed.split(/\s+/);
+    const parts = trimmed
+        .replace(/\u00A0/g, ' ')
+        .split(/[\t ]+/)
+        .filter(Boolean);
+
     if (parts.length < 10) return null;
 
     const nums = parts.slice(0, 10).map(parseHydroNumber);
@@ -1233,9 +1246,47 @@ function showLoading(show) {
 function readFileAsText(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = (e) => resolve(e.target.result);
+
+        reader.onload = () => {
+            try {
+                const buffer = reader.result;
+                const bytes = new Uint8Array(buffer);
+
+                const decodersToTry = [
+                    new TextDecoder('utf-8', { fatal: false }),
+                    new TextDecoder('utf-16le', { fatal: false }),
+                    new TextDecoder('utf-16be', { fatal: false })
+                ];
+
+                let bestText = '';
+                let bestScore = -1;
+
+                for (const decoder of decodersToTry) {
+                    let text = decoder.decode(bytes);
+
+                    const lines = text.split(/\r?\n/);
+                    let score = 0;
+
+                    for (let i = 0; i < Math.min(lines.length, 200); i++) {
+                        if (tryParseScalarRow(lines[i]) || tryParseVectorRow(lines[i])) {
+                            score++;
+                        }
+                    }
+
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestText = text;
+                    }
+                }
+
+                resolve(bestText);
+            } catch (err) {
+                reject(new Error('Failed to decode file text'));
+            }
+        };
+
         reader.onerror = () => reject(new Error('Failed to read file'));
-        reader.readAsText(file);
+        reader.readAsArrayBuffer(file);
     });
 }
 
