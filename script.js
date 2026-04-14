@@ -327,7 +327,11 @@ function tryParseScalarRow(line) {
     if (!trimmed) return null;
     if (trimmed.startsWith('.')) return null;
 
-    const parts = splitHydroFields(line);
+    const parts = trimmed
+        .replace(/\u00A0/g, ' ')
+        .split(/[\t ]+/)
+        .filter(Boolean);
+
     if (parts.length < 8) return null;
 
     const nums = parts.slice(0, 8).map(parseHydroNumber);
