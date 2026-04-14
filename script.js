@@ -436,7 +436,7 @@ async function loadAndProcessFile() {
 }
 
 function validateFileFormat(text) {
-    const lines = text.split(/\r?\n/);
+    const lines = text.split(/\r\n|\n|\r/);
     let validDataLines = 0;
     const examples = [];
 
@@ -478,7 +478,7 @@ async function buildTimeIndex(text) {
     timeIndex = {};
     timePoints = [];
 
-    const lines = text.split(/\r?\n/);
+    const lines = text.split(/\r\n|\n|\r/);
     let currentTime = null;
     let startLine = null;
 
@@ -512,7 +512,7 @@ function parseTimeStepData(text, time) {
     if (!range) return [];
 
     const [start, end] = range;
-    const lines = text.split(/\r?\n/).slice(start, end + 1);
+    const lines = text.split(/\r\n|\n|\r/).slice(start, end + 1);
     const data = [];
 
     for (const line of lines) {
@@ -573,7 +573,7 @@ async function loadVectorFile() {
 }
 
 function validateVectorFileFormat(text) {
-    const lines = text.split(/\r?\n/);
+    const lines = text.split(/\r\n|\n|\r/;
     let validDataLines = 0;
     const examples = [];
 
@@ -615,7 +615,7 @@ async function buildVectorTimeIndex(text) {
     vectorTimeIndex = {};
     vectorTimePoints = [];
 
-    const lines = text.split(/\r?\n/);
+    const lines = text.split(/\r\n|\n|\r/);
     let currentTime = null;
     let startLine = null;
 
@@ -648,7 +648,7 @@ function parseVectorTimeStepData(text, time) {
     if (!vectorTimeIndex[time]) return [];
 
     const [start, end] = vectorTimeIndex[time];
-    const lines = text.split(/\r?\n/).slice(start, end + 1);
+    const lines = text.split(/\r\n|\n|\r/).slice(start, end + 1);
     const data = [];
 
     for (const line of lines) {
@@ -1264,7 +1264,7 @@ function readFileAsText(file) {
                 for (const decoder of decodersToTry) {
                     let text = decoder.decode(bytes);
 
-                    const lines = text.split(/\r?\n/);
+                    const lines = text.split(/\r\n|\n|\r/);
                     let score = 0;
 
                     for (let i = 0; i < Math.min(lines.length, 200); i++) {
