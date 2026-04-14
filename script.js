@@ -287,14 +287,18 @@ function computeDerivedValueAtPoint(fieldName, vectorPoint, scalarPoint, cellAre
 }
 
 // ============================================================
-// Robust HYDROTHERM / Fortran parsing helpers
+// Robust parsing helpers
 // ============================================================
+
+function splitHydroLines(text) {
+    return String(text).split(/\r\n|\n|\r/);
+}
 
 function parseHydroNumber(value) {
     if (value === undefined || value === null) return NaN;
 
     const normalized = String(value)
-        .replace(/\u0000/g, '')   // strip NUL characters
+        .replace(/\u0000/g, '')
         .trim()
         .replace(/[dD]/g, 'E')
         .replace(/−/g, '-')
@@ -307,20 +311,23 @@ function parseHydroNumber(value) {
     return Number.isFinite(n) ? n : NaN;
 }
 
+function splitHydroFields(line) {
+    return String(line)
+        .replace(/\u0000/g, '')
+        .replace(/\u00A0/g, ' ')
+        .trim()
+        .split(/[\t ]+/)
+        .filter(Boolean);
+}
+
 function tryParseScalarRow(line) {
     if (typeof line !== 'string') return null;
 
-    const cleaned = line.replace(/\u0000/g, '');
-    const trimmed = cleaned.trim();
-
+    const trimmed = line.replace(/\u0000/g, '').trim();
     if (!trimmed) return null;
     if (trimmed.startsWith('.')) return null;
 
-    const parts = trimmed
-        .replace(/\u00A0/g, ' ')
-        .split(/[\t ]+/)
-        .filter(Boolean);
-
+    const parts = splitHydroFields(line);
     if (parts.length < 8) return null;
 
     const nums = parts.slice(0, 8).map(parseHydroNumber);
@@ -333,17 +340,11 @@ function tryParseScalarRow(line) {
 function tryParseVectorRow(line) {
     if (typeof line !== 'string') return null;
 
-    const cleaned = line.replace(/\u0000/g, '');
-    const trimmed = cleaned.trim();
-
+    const trimmed = line.replace(/\u0000/g, '').trim();
     if (!trimmed) return null;
     if (trimmed.startsWith('.')) return null;
 
-    const parts = trimmed
-        .replace(/\u00A0/g, ' ')
-        .split(/[\t ]+/)
-        .filter(Boolean);
-
+    const parts = splitHydroFields(line);
     if (parts.length < 10) return null;
 
     const nums = parts.slice(0, 10).map(parseHydroNumber);
@@ -351,45 +352,6 @@ function tryParseVectorRow(line) {
 
     const [x, y, z, time, xw, yw, zw, xs, ys, zs] = nums;
     return { x, y, z, time, xw, yw, zw, xs, ys, zs };
-}
-
-function isLikelyScalarHeaderLine(trimmed) {
-    if (!trimmed) return true;
-
-    const lower = trimmed.toLowerCase();
-
-    return (
-        trimmed.startsWith('.') ||
-        lower.includes('(km)') ||
-        lower.includes('(yr)') ||
-        lower.includes('(deg.c)') ||
-        lower.includes('(bar)') ||
-        lower.includes('phase index') ||
-        lower.includes('cell nusselt') ||
-        lower.includes('temperature') ||
-        lower.includes('pressure') ||
-        lower.includes('saturation')
-    );
-}
-
-function isLikelyVectorHeaderLine(trimmed) {
-    if (!trimmed) return true;
-
-    const lower = trimmed.toLowerCase();
-
-    return (
-        trimmed.startsWith('.') ||
-        lower.includes('(km)') ||
-        lower.includes('(yr)') ||
-        lower.includes('(g/s-cm^2)') ||
-        lower.includes('mass flux') ||
-        lower.includes('x water') ||
-        lower.includes('y water') ||
-        lower.includes('z water') ||
-        lower.includes('x steam') ||
-        lower.includes('y steam') ||
-        lower.includes('z steam')
-    );
 }
 
 // ============================================================
@@ -412,6 +374,15 @@ async function loadAndProcessFile() {
 
     try {
         fileText = await readFileAsText(file);
+
+        console.log('file name:', file.name);
+        console.log('fileText length:', fileText.length);
+        console.log('fileText first 200 chars:', JSON.stringify(fileText.slice(0, 200)));
+        console.log('newline counts:', {
+            lf: (fileText.match(/\n/g) || []).length,
+            cr: (fileText.match(/\r/g) || []).length
+        });
+        console.log('first split length:', splitHydroLines(fileText).length);
 
         const formatValidation = validateFileFormat(fileText);
         if (!formatValidation.isValid) {
@@ -436,7 +407,7 @@ async function loadAndProcessFile() {
 }
 
 function validateFileFormat(text) {
-    const lines = text.split(/\r\n|\n|\r/);
+    const lines = splitHydroLines(text);
     let validDataLines = 0;
     const examples = [];
 
@@ -478,7 +449,7 @@ async function buildTimeIndex(text) {
     timeIndex = {};
     timePoints = [];
 
-    const lines = text.split(/\r\n|\n|\r/);
+    const lines = splitHydroLines(text);
     let currentTime = null;
     let startLine = null;
 
@@ -512,7 +483,7 @@ function parseTimeStepData(text, time) {
     if (!range) return [];
 
     const [start, end] = range;
-    const lines = text.split(/\r\n|\n|\r/).slice(start, end + 1);
+    const lines = splitHydroLines(text).slice(start, end + 1);
     const data = [];
 
     for (const line of lines) {
@@ -549,6 +520,15 @@ async function loadVectorFile() {
     try {
         vectorFileText = await readFileAsText(file);
 
+        console.log('vector file name:', file.name);
+        console.log('vector fileText length:', vectorFileText.length);
+        console.log('vector fileText first 200 chars:', JSON.stringify(vectorFileText.slice(0, 200)));
+        console.log('vector newline counts:', {
+            lf: (vectorFileText.match(/\n/g) || []).length,
+            cr: (vectorFileText.match(/\r/g) || []).length
+        });
+        console.log('vector first split length:', splitHydroLines(vectorFileText).length);
+
         const formatValidation = validateVectorFileFormat(vectorFileText);
         if (!formatValidation.isValid) {
             throw new Error(`Invalid vector file format: ${formatValidation.error}`);
@@ -558,9 +538,7 @@ async function loadVectorFile() {
 
         const currentTime = timePoints[currentTimeIndex];
         const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
-        vectorData = bestVectorTime !== null
-            ? parseVectorTimeStepData(vectorFileText, bestVectorTime)
-            : [];
+        vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
 
         vectorType = vectorTypeSelect.value;
         arrowScale = parseFloat(arrowScaleSlider.value);
@@ -573,7 +551,7 @@ async function loadVectorFile() {
 }
 
 function validateVectorFileFormat(text) {
-    const lines = text.split(/\r\n|\n|\r/;
+    const lines = splitHydroLines(text);
     let validDataLines = 0;
     const examples = [];
 
@@ -615,7 +593,7 @@ async function buildVectorTimeIndex(text) {
     vectorTimeIndex = {};
     vectorTimePoints = [];
 
-    const lines = text.split(/\r\n|\n|\r/);
+    const lines = splitHydroLines(text);
     let currentTime = null;
     let startLine = null;
 
@@ -648,7 +626,7 @@ function parseVectorTimeStepData(text, time) {
     if (!vectorTimeIndex[time]) return [];
 
     const [start, end] = vectorTimeIndex[time];
-    const lines = text.split(/\r\n|\n|\r/).slice(start, end + 1);
+    const lines = splitHydroLines(text).slice(start, end + 1);
     const data = [];
 
     for (const line of lines) {
@@ -793,9 +771,7 @@ function setupVectorControls() {
         if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
             const currentTime = timePoints[currentTimeIndex];
             const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
-            vectorData = bestVectorTime !== null
-                ? parseVectorTimeStepData(vectorFileText, bestVectorTime)
-                : [];
+            vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
             plotData();
         }
     });
@@ -873,11 +849,9 @@ function resetAxes() {
 function updateTimeDisplay() {
     const timeDisplay = document.getElementById('timeDisplay');
     const currentTime = timePoints[currentTimeIndex];
-    if (currentTime !== undefined) {
-        timeDisplay.textContent = `Time: ${currentTime.toFixed(5)} years`;
-    } else {
-        timeDisplay.textContent = 'Time: N/A';
-    }
+    timeDisplay.textContent = Number.isFinite(currentTime)
+        ? `Time: ${currentTime.toFixed(5)} years`
+        : 'Time: N/A';
 }
 
 // ============================================================
@@ -894,16 +868,11 @@ async function plotData() {
     const currentTime = timePoints[currentTimeIndex];
 
     const timeData = parseTimeStepData(fileText, currentTime);
-    if (timeData.length === 0) {
-        console.warn('No scalar data found for time:', currentTime);
-        return;
-    }
+    if (timeData.length === 0) return;
 
     if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
         const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
-        vectorData = bestVectorTime !== null
-            ? parseVectorTimeStepData(vectorFileText, bestVectorTime)
-            : [];
+        vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
     }
 
     let meshData;
@@ -945,7 +914,7 @@ async function plotData() {
 
     const traces = [];
 
-    const heatmapTrace = {
+    traces.push({
         z: meshData.z,
         x: meshData.x,
         y: meshData.y,
@@ -964,12 +933,10 @@ async function plotData() {
             'Z: %{y:.3f} km<br>' +
             `${getVariableLabel(selectedVariable)}: %{z:.3f}<br>` +
             '<extra></extra>'
-    };
-    traces.push(heatmapTrace);
+    });
 
     if (plottedPoints.length > 0) {
-        for (let i = 0; i < plottedPoints.length; i++) {
-            const point = plottedPoints[i];
+        for (const point of plottedPoints) {
             traces.push({
                 x: [point.x],
                 y: [point.z],
@@ -978,10 +945,7 @@ async function plotData() {
                 marker: {
                     size: 12,
                     color: point.color,
-                    line: {
-                        color: 'white',
-                        width: 2
-                    },
+                    line: { color: 'white', width: 2 },
                     symbol: 'circle'
                 },
                 text: [`P${point.id}`],
@@ -1139,11 +1103,7 @@ function createMeshGrid(data, variable) {
                 Math.abs(d.z - zCoords[i]) < 1e-10
             );
 
-            if (point) {
-                row.push(point[variable]);
-            } else {
-                row.push(NaN);
-            }
+            row.push(point ? point[variable] : NaN);
         }
         zMatrix.push(row);
     }
@@ -1244,50 +1204,7 @@ function showLoading(show) {
 }
 
 function readFileAsText(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-
-        reader.onload = () => {
-            try {
-                const buffer = reader.result;
-                const bytes = new Uint8Array(buffer);
-
-                const decodersToTry = [
-                    new TextDecoder('utf-8', { fatal: false }),
-                    new TextDecoder('utf-16le', { fatal: false }),
-                    new TextDecoder('utf-16be', { fatal: false })
-                ];
-
-                let bestText = '';
-                let bestScore = -1;
-
-                for (const decoder of decodersToTry) {
-                    let text = decoder.decode(bytes);
-
-                    const lines = text.split(/\r\n|\n|\r/);
-                    let score = 0;
-
-                    for (let i = 0; i < Math.min(lines.length, 200); i++) {
-                        if (tryParseScalarRow(lines[i]) || tryParseVectorRow(lines[i])) {
-                            score++;
-                        }
-                    }
-
-                    if (score > bestScore) {
-                        bestScore = score;
-                        bestText = text;
-                    }
-                }
-
-                resolve(bestText);
-            } catch (err) {
-                reject(new Error('Failed to decode file text'));
-            }
-        };
-
-        reader.onerror = () => reject(new Error('Failed to read file'));
-        reader.readAsArrayBuffer(file);
-    });
+    return file.text();
 }
 
 function applyTheme(theme) {
@@ -1618,7 +1535,7 @@ async function exportGifAnimation() {
         await new Promise(r => setTimeout(r, 100));
     }
 
-    progressDiv.textContent = 'Zipping frames...';
+    progressDiv.textContent = `Zipping frames...`;
     const zipBlob = await zip.generateAsync({ type: 'blob' });
     saveAs(zipBlob, `${folderName}.zip`);
     progressDiv.textContent = `Done! Unzip ${folderName}.zip, then run: convert -delay 5 *.png screens.gif`;
@@ -1679,7 +1596,7 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 document.addEventListener('keydown', function (e) {
-    if (!fileText || timePoints.length === 0) return;
+    if (!fileText) return;
 
     const timeRange = document.getElementById('timeRange');
     const currentValue = parseInt(timeRange.value, 10);
