@@ -657,17 +657,24 @@ function validateVectorFileFormat(text) {
         }
     }
 
-    console.log('Vector validation summary:', {
+    const detected = detectHydroFileKind(text);
+
+    console.log('HYDROTHERM vector validation summary:', {
         totalLines: lines.length,
         validDataLines,
+        detected,
         examples
     });
 
     if (validDataLines === 0) {
-        console.log('First 20 raw vector lines:', lines.slice(0, 20));
+        console.log('First 30 raw vector lines:', lines.slice(0, 30));
         return {
             isValid: false,
-            error: 'No valid vector data rows were found'
+            error:
+                `No valid vector data rows were found. ` +
+                `Detected kind: ${detected.kind}; ` +
+                `scalar-like rows: ${detected.scalarRows}; ` +
+                `vector-like rows: ${detected.vectorRows}.`
         };
     }
 
@@ -676,7 +683,8 @@ function validateVectorFileFormat(text) {
         error: null,
         stats: {
             totalLines: lines.length,
-            validDataLines
+            validDataLines,
+            detected
         }
     };
 }
