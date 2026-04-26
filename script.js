@@ -287,11 +287,16 @@ function computeDerivedValueAtPoint(fieldName, vectorPoint, scalarPoint, cellAre
 }
 
 // ============================================================
-// Robust parsing helpers
+// Robust HYDROTHERM parsing helpers
+// Heading-independent parser:
+// - ignores title/comment/header/unit lines
+// - accepts arbitrary run names like .Heap12, .ht10, .convectMars
+// - detects scalar rows from numeric structure
+// - detects vector rows from numeric structure
 // ============================================================
 
 function splitHydroLines(text) {
-    return String(text).split(/\r\n|\n|\r/);
+    return String(text || '').split(/\r\n|\n|\r/);
 }
 
 function parseHydroNumber(value) {
@@ -299,20 +304,26 @@ function parseHydroNumber(value) {
 
     const normalized = String(value)
         .replace(/\u0000/g, '')
-        .trim()
-        .replace(/[dD]/g, 'E')
-        .replace(/−/g, '-')
         .replace(/\u00A0/g, ' ')
-        .replace(/,/g, '');
+        .replace(/−/g, '-')
+        .replace(/[dD]/g, 'E')
+        .replace(/,/g, '')
+        .trim();
 
     if (normalized === '') return NaN;
 
-    const n = parseFloat(normalized);
+    // Require the token to begin like a number, not merely contain a number.
+    // This prevents things like "x", "(km)", "phase", or "conduit" from passing.
+    if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[Ee][+-]?\d+)?$/.test(normalized)) {
+        return NaN;
+    }
+
+    const n = Number(normalized);
     return Number.isFinite(n) ? n : NaN;
 }
 
 function splitHydroFields(line) {
-    return String(line)
+    return String(line || '')
         .replace(/\u0000/g, '')
         .replace(/\u00A0/g, ' ')
         .trim()
@@ -320,42 +331,111 @@ function splitHydroFields(line) {
         .filter(Boolean);
 }
 
-function tryParseScalarRow(line) {
-    if (typeof line !== 'string') return null;
+function getNumericParts(line) {
+    const parts = splitHydroFields(line);
+    const nums = parts.map(parseHydroNumber);
 
-    const trimmed = line.replace(/\u0000/g, '').trim();
-    if (!trimmed) return null;
-    if (trimmed.startsWith('.')) return null;
-
-    const parts = trimmed
-        .replace(/\u00A0/g, ' ')
-        .split(/[\t ]+/)
-        .filter(Boolean);
-
-    if (parts.length < 8) return null;
-
-    const nums = parts.slice(0, 8).map(parseHydroNumber);
+    // A real data row should be all numeric tokens.
+    // Header/unit/title lines will fail here.
+    if (parts.length === 0) return null;
     if (nums.some(v => Number.isNaN(v))) return null;
 
+    return nums;
+}
+
+function looksLikeHydroDataLine(line, minCols) {
+    const nums = getNumericParts(line);
+    return nums && nums.length >= minCols;
+}
+
+function detectHydroFileKind(text) {
+    const lines = splitHydroLines(text);
+
+    let scalarRows = 0;
+    let vectorRows = 0;
+    let firstScalarLine = null;
+    let firstVectorLine = null;
+
+    for (let i = 0; i < lines.length; i++) {
+        const nums = getNumericParts(lines[i]);
+        if (!nums) continue;
+
+        // Vector output has at least 10 numeric columns:
+        // x y z time xw yw zw xs ys zs
+        if (nums.length >= 10) {
+            vectorRows++;
+            if (firstVectorLine === null) firstVectorLine = i;
+        }
+
+        // Scalar output has at least 8 numeric columns:
+        // x y z time temperature pressure saturation phase
+        // It may have a 9th field, e.g., Cell Nusselt No.
+        if (nums.length >= 8) {
+            scalarRows++;
+            if (firstScalarLine === null) firstScalarLine = i;
+        }
+    }
+
+    // Prefer vector when many rows have 10 columns, because vector rows
+    // also technically satisfy ">= 8".
+    let kind = 'unknown';
+    if (vectorRows > 0 && vectorRows >= scalarRows * 0.5) {
+        kind = 'vector';
+    } else if (scalarRows > 0) {
+        kind = 'scalar';
+    }
+
+    return {
+        kind,
+        scalarRows,
+        vectorRows,
+        firstScalarLine,
+        firstVectorLine
+    };
+}
+
+function tryParseScalarRow(line) {
+    const nums = getNumericParts(line);
+    if (!nums || nums.length < 8) return null;
+
+    // Do not accidentally parse vector rows as scalar rows.
+    // Vector files have 10 columns where columns 5-10 are fluxes.
+    // Scalar files usually have 8 or 9 columns.
+    if (nums.length >= 10) return null;
+
     const [x, y, z, time, temperature, pressure, saturation, phase] = nums;
-    return { x, y, z, time, temperature, pressure, saturation, phase };
+
+    return {
+        x,
+        y,
+        z,
+        time,
+        temperature,
+        pressure,
+        saturation,
+        phase,
+        nusselt: nums.length >= 9 ? nums[8] : NaN
+    };
 }
 
 function tryParseVectorRow(line) {
-    if (typeof line !== 'string') return null;
-
-    const trimmed = line.replace(/\u0000/g, '').trim();
-    if (!trimmed) return null;
-    if (trimmed.startsWith('.')) return null;
-
-    const parts = splitHydroFields(line);
-    if (parts.length < 10) return null;
-
-    const nums = parts.slice(0, 10).map(parseHydroNumber);
-    if (nums.some(v => Number.isNaN(v))) return null;
+    const nums = getNumericParts(line);
+    if (!nums || nums.length < 10) return null;
 
     const [x, y, z, time, xw, yw, zw, xs, ys, zs] = nums;
-    return { x, y, z, time, xw, yw, zw, xs, ys, zs };
+
+    return {
+        x,
+        y,
+        z,
+        time,
+        xw,
+        yw,
+        zw,
+        xs,
+        ys,
+        zs
+    };
 }
 
 // ============================================================
@@ -425,17 +505,24 @@ function validateFileFormat(text) {
         }
     }
 
-    console.log('Scalar validation summary:', {
+    const detected = detectHydroFileKind(text);
+
+    console.log('HYDROTHERM scalar validation summary:', {
         totalLines: lines.length,
         validDataLines,
+        detected,
         examples
     });
 
     if (validDataLines === 0) {
-        console.log('First 20 raw scalar lines:', lines.slice(0, 20));
+        console.log('First 30 raw lines:', lines.slice(0, 30));
         return {
             isValid: false,
-            error: 'No valid scalar data rows were found'
+            error:
+                `No valid scalar data rows were found. ` +
+                `Detected kind: ${detected.kind}; ` +
+                `scalar-like rows: ${detected.scalarRows}; ` +
+                `vector-like rows: ${detected.vectorRows}.`
         };
     }
 
@@ -444,7 +531,8 @@ function validateFileFormat(text) {
         error: null,
         stats: {
             totalLines: lines.length,
-            validDataLines
+            validDataLines,
+            detected
         }
     };
 }
