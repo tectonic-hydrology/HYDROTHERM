@@ -1,6 +1,6 @@
 // --- GLOBALS ---
-let fileText = null;
-let timeIndex = {};
+let fileText = null;          // kept for "is a file loaded?" checks; cleared after parse
+let timeIndex = {};           // legacy (retained for compatibility); unused after parse
 let timePoints = [];
 let currentTimeIndex = 0;
 let currentDataRange = { min: 0, max: 100 };
@@ -19,6 +19,14 @@ let arrowScale = -2.0; // log10 scale
 let currentTheme = 'dark';
 let arrowColor = '#ffffff';
 let nextPointSlot = 1; // for click-to-select
+
+// Structured (typed-array) representations of the loaded files.
+// Built once at upload time; every render path reads from these instead of
+// re-splitting the original text. This is what makes Plot_*.convectMars-sized
+// files responsive in the browser.
+let parsedScalar = null;      // { timePoints, xCoords, zCoords, xIndex, zIndex,
+                              //   nx, nz, cellsPerStep, gridded:{var->Float32Array(nt*nz*nx)} }
+let parsedVector = null;      // similar shape with xw,yw,zw,xs,ys,zs gridded fields
 
 const DERIVED_VECTOR_FIELDS = [
     'water_flux_mag',
@@ -101,6 +109,21 @@ function getClosestTimeValue(targetTime, availableTimes) {
     );
 }
 
+// Min/max over a (possibly very large) typed array, without using
+// `Math.min(...arr)` — that pattern crashes browsers past ~100k–1M args.
+function arrayMinMaxFinite(arr) {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < arr.length; i++) {
+        const v = arr[i];
+        if (Number.isFinite(v)) {
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+        }
+    }
+    if (lo === Infinity) return { min: 0, max: 1 };
+    return { min: lo, max: hi };
+}
+
 function buildTemperatureLookup(timeData) {
     const lookup = new Map();
     for (const row of timeData) {
@@ -171,6 +194,12 @@ function computeTypicalCellAreaM2FromVectorRows(vectorRows) {
     return dxM * dzM;
 }
 
+// FIXME (heat-flux formula): this computes ρv·Cp·T using ABSOLUTE Kelvin
+// temperature, which is not physically heat flux density. Heat flux density
+// requires either Cp·ΔT against a reference, or a specific-enthalpy lookup
+// h(T,p). Values produced here are large because they scale with T_K rather
+// than ΔT. Kept as-is to preserve existing UI behavior; flagged for a domain
+// review before publishing the "heat transport proxy" output as physical.
 function computeHeatFluxDensityWm2(waterMag, steamMag, tempC) {
     const waterFluxSI = waterMag * 10.0; // g/s/cm^2 -> kg/s/m^2
     const steamFluxSI = steamMag * 10.0;
@@ -219,6 +248,20 @@ function deriveVectorField(vectorRows, fieldName, tempLookup = null) {
             z: value
         };
     });
+}
+
+// Fast nearest-cell lookup: binary search the sorted xCoords/zCoords.
+function nearestIndex(sortedArr, value) {
+    if (!sortedArr || sortedArr.length === 0) return -1;
+    let lo = 0, hi = sortedArr.length - 1;
+    if (value <= sortedArr[lo]) return lo;
+    if (value >= sortedArr[hi]) return hi;
+    while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (sortedArr[mid] < value) lo = mid;
+        else hi = mid;
+    }
+    return (value - sortedArr[lo] < sortedArr[hi] - value) ? lo : hi;
 }
 
 function findClosestScalarPoint(timeData, x, z) {
@@ -303,8 +346,8 @@ function parseHydroNumber(value) {
     if (value === undefined || value === null) return NaN;
 
     const normalized = String(value)
-        .replace(/\u0000/g, '')
-        .replace(/\u00A0/g, ' ')
+        .replace(/ /g, '')
+        .replace(/ /g, ' ')
         .replace(/−/g, '-')
         .replace(/[dD]/g, 'E')
         .replace(/,/g, '')
@@ -313,7 +356,6 @@ function parseHydroNumber(value) {
     if (normalized === '') return NaN;
 
     // Require the token to begin like a number, not merely contain a number.
-    // This prevents things like "x", "(km)", "phase", or "conduit" from passing.
     if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[Ee][+-]?\d+)?$/.test(normalized)) {
         return NaN;
     }
@@ -324,8 +366,8 @@ function parseHydroNumber(value) {
 
 function splitHydroFields(line) {
     return String(line || '')
-        .replace(/\u0000/g, '')
-        .replace(/\u00A0/g, ' ')
+        .replace(/ /g, '')
+        .replace(/ /g, ' ')
         .trim()
         .split(/[\t ]+/)
         .filter(Boolean);
@@ -376,8 +418,6 @@ function detectHydroFileKind(text) {
         }
     }
 
-    // Prefer vector when many rows have 10 columns, because vector rows
-    // also technically satisfy ">= 8".
     let kind = 'unknown';
     if (vectorRows > 0 && vectorRows >= scalarRows * 0.5) {
         kind = 'vector';
@@ -399,8 +439,6 @@ function tryParseScalarRow(line) {
     if (!nums || nums.length < 8) return null;
 
     // Do not accidentally parse vector rows as scalar rows.
-    // Vector files have 10 columns where columns 5-10 are fluxes.
-    // Scalar files usually have 8 or 9 columns.
     if (nums.length >= 10) return null;
 
     const [x, y, z, time, temperature, pressure, saturation, phase] = nums;
@@ -439,6 +477,217 @@ function tryParseVectorRow(line) {
 }
 
 // ============================================================
+// Structured parser (typed arrays, single pass)
+// ============================================================
+//
+// Splits the file into lines once, parses each row once, and lays the result
+// out into typed arrays grouped by timestep. Coordinate maps and per-variable
+// gridded matrices are built so every later operation (heatmap, time series,
+// GIF export) is O(1) per cell rather than O(file size).
+//
+// Memory footprint for the gridded matrices on a 2155-step / 1680-cell scalar
+// file: ~72 MB across the 5 scalar variables. The original file string can
+// be freed afterwards to keep the tab well under typical memory budgets.
+
+const SCALAR_VARS = ['temperature', 'pressure', 'saturation', 'phase', 'nusselt'];
+const VECTOR_VARS = ['xw', 'yw', 'zw', 'xs', 'ys', 'zs'];
+
+function _firstTimestepCoords(rowParser, lines) {
+    const xs = new Set();
+    const zs = new Set();
+    let firstTime = null;
+    for (let i = 0; i < lines.length; i++) {
+        const row = rowParser(lines[i]);
+        if (!row) continue;
+        if (firstTime === null) firstTime = row.time;
+        if (row.time !== firstTime) break;
+        xs.add(row.x);
+        zs.add(row.z);
+    }
+    return {
+        xCoords: Float64Array.from([...xs].sort((a, b) => a - b)),
+        zCoords: Float64Array.from([...zs].sort((a, b) => a - b))
+    };
+}
+
+function _buildIndexMap(coords) {
+    const map = new Map();
+    for (let i = 0; i < coords.length; i++) map.set(coords[i], i);
+    return map;
+}
+
+function buildStructuredScalar(text) {
+    const lines = splitHydroLines(text);
+
+    const { xCoords, zCoords } = _firstTimestepCoords(tryParseScalarRow, lines);
+    const xIndex = _buildIndexMap(xCoords);
+    const zIndex = _buildIndexMap(zCoords);
+    const nx = xCoords.length;
+    const nz = zCoords.length;
+
+    if (nx === 0 || nz === 0) {
+        throw new Error('Could not detect a regular x/z grid from the scalar file.');
+    }
+
+    const cellsPerStep = nx * nz;
+
+    // First pass: collect unique times in encounter order.
+    const seenTimes = new Set();
+    const timeOrder = [];
+    for (let i = 0; i < lines.length; i++) {
+        const row = tryParseScalarRow(lines[i]);
+        if (!row) continue;
+        if (!seenTimes.has(row.time)) {
+            seenTimes.add(row.time);
+            timeOrder.push(row.time);
+        }
+    }
+
+    const timesSorted = timeOrder.slice().sort((a, b) => a - b);
+    const nt = timesSorted.length;
+    const tIndex = new Map(timesSorted.map((t, i) => [t, i]));
+
+    const gridded = {};
+    for (const v of SCALAR_VARS) {
+        gridded[v] = new Float32Array(nt * cellsPerStep);
+        gridded[v].fill(NaN);
+    }
+
+    // Second pass: fill grids.
+    for (let i = 0; i < lines.length; i++) {
+        const row = tryParseScalarRow(lines[i]);
+        if (!row) continue;
+        const ti = tIndex.get(row.time);
+        const ix = xIndex.get(row.x);
+        const iz = zIndex.get(row.z);
+        if (ti === undefined || ix === undefined || iz === undefined) continue;
+        const off = ti * cellsPerStep + iz * nx + ix;
+        gridded.temperature[off] = row.temperature;
+        gridded.pressure[off] = row.pressure;
+        gridded.saturation[off] = row.saturation;
+        gridded.phase[off] = row.phase;
+        gridded.nusselt[off] = row.nusselt;
+    }
+
+    return {
+        kind: 'scalar',
+        timePoints: timesSorted,
+        xCoords, zCoords, xIndex, zIndex, nx, nz,
+        cellsPerStep,
+        gridded
+    };
+}
+
+function buildStructuredVector(text) {
+    const lines = splitHydroLines(text);
+
+    const { xCoords, zCoords } = _firstTimestepCoords(tryParseVectorRow, lines);
+    const xIndex = _buildIndexMap(xCoords);
+    const zIndex = _buildIndexMap(zCoords);
+    const nx = xCoords.length;
+    const nz = zCoords.length;
+
+    if (nx === 0 || nz === 0) {
+        throw new Error('Could not detect a regular x/z grid from the vector file.');
+    }
+
+    const cellsPerStep = nx * nz;
+
+    const seenTimes = new Set();
+    const timeOrder = [];
+    for (let i = 0; i < lines.length; i++) {
+        const row = tryParseVectorRow(lines[i]);
+        if (!row) continue;
+        if (!seenTimes.has(row.time)) {
+            seenTimes.add(row.time);
+            timeOrder.push(row.time);
+        }
+    }
+
+    const timesSorted = timeOrder.slice().sort((a, b) => a - b);
+    const nt = timesSorted.length;
+    const tIndex = new Map(timesSorted.map((t, i) => [t, i]));
+
+    const gridded = {};
+    for (const v of VECTOR_VARS) {
+        gridded[v] = new Float32Array(nt * cellsPerStep);
+        gridded[v].fill(NaN);
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+        const row = tryParseVectorRow(lines[i]);
+        if (!row) continue;
+        const ti = tIndex.get(row.time);
+        const ix = xIndex.get(row.x);
+        const iz = zIndex.get(row.z);
+        if (ti === undefined || ix === undefined || iz === undefined) continue;
+        const off = ti * cellsPerStep + iz * nx + ix;
+        for (const v of VECTOR_VARS) gridded[v][off] = row[v];
+    }
+
+    return {
+        kind: 'vector',
+        timePoints: timesSorted,
+        xCoords, zCoords, xIndex, zIndex, nx, nz,
+        cellsPerStep,
+        gridded
+    };
+}
+
+// Materialize one timestep as the array-of-objects shape the rest of the
+// app expects. ~nx*nz objects per call — fine for a per-render path
+// (heatmap, click handler) but should NOT be called in a per-cell or
+// per-timestep loop. Use direct typed-array reads in those cases.
+function materializeScalarStep(p, ti) {
+    if (!p || ti < 0 || ti >= p.timePoints.length) return [];
+    const out = new Array(p.cellsPerStep);
+    const time = p.timePoints[ti];
+    let k = 0;
+    for (let iz = 0; iz < p.nz; iz++) {
+        for (let ix = 0; ix < p.nx; ix++) {
+            const off = ti * p.cellsPerStep + iz * p.nx + ix;
+            out[k++] = {
+                x: p.xCoords[ix],
+                y: 0,
+                z: p.zCoords[iz],
+                time,
+                temperature: p.gridded.temperature[off],
+                pressure: p.gridded.pressure[off],
+                saturation: p.gridded.saturation[off],
+                phase: p.gridded.phase[off],
+                nusselt: p.gridded.nusselt[off]
+            };
+        }
+    }
+    return out;
+}
+
+function materializeVectorStep(p, ti) {
+    if (!p || ti < 0 || ti >= p.timePoints.length) return [];
+    const out = new Array(p.cellsPerStep);
+    const time = p.timePoints[ti];
+    let k = 0;
+    for (let iz = 0; iz < p.nz; iz++) {
+        for (let ix = 0; ix < p.nx; ix++) {
+            const off = ti * p.cellsPerStep + iz * p.nx + ix;
+            out[k++] = {
+                x: p.xCoords[ix],
+                y: 0,
+                z: p.zCoords[iz],
+                time,
+                xw: p.gridded.xw[off],
+                yw: p.gridded.yw[off],
+                zw: p.gridded.zw[off],
+                xs: p.gridded.xs[off],
+                ys: p.gridded.ys[off],
+                zs: p.gridded.zs[off]
+            };
+        }
+    }
+    return out;
+}
+
+// ============================================================
 // File loading and validation
 // ============================================================
 
@@ -457,23 +706,29 @@ async function loadAndProcessFile() {
     showLoading(true);
 
     try {
-        fileText = await readFileAsText(file);
+        const rawText = await readFileAsText(file);
 
         console.log('file name:', file.name);
-        console.log('fileText length:', fileText.length);
-        console.log('fileText first 200 chars:', JSON.stringify(fileText.slice(0, 200)));
-        console.log('newline counts:', {
-            lf: (fileText.match(/\n/g) || []).length,
-            cr: (fileText.match(/\r/g) || []).length
-        });
-        console.log('first split length:', splitHydroLines(fileText).length);
+        console.log('fileText length:', rawText.length);
+        console.log('fileText first 200 chars:', JSON.stringify(rawText.slice(0, 200)));
 
-        const formatValidation = validateFileFormat(fileText);
+        const formatValidation = validateFileFormat(rawText);
         if (!formatValidation.isValid) {
             throw new Error(`Invalid file format: ${formatValidation.error}`);
         }
 
-        await buildTimeIndex(fileText);
+        const t0 = performance.now();
+        parsedScalar = buildStructuredScalar(rawText);
+        console.log(
+            `parsed scalar in ${(performance.now() - t0).toFixed(0)} ms: ` +
+            `nt=${parsedScalar.timePoints.length}, nx=${parsedScalar.nx}, nz=${parsedScalar.nz}`
+        );
+
+        // Free the raw text now that we have the structured arrays.
+        // Keep `fileText` non-null as a "loaded" sentinel for legacy checks.
+        fileText = '__loaded__';
+        timePoints = parsedScalar.timePoints;
+        currentTimeIndex = 0;
 
         if (timePoints.length > 0) {
             setupTimeSlider();
@@ -491,7 +746,10 @@ async function loadAndProcessFile() {
 }
 
 function validateFileFormat(text) {
-    const lines = splitHydroLines(text);
+    // Cheap check: scan a prefix; full validation happens when the structured
+    // parser runs and either produces a grid or throws.
+    const prefix = text.length > 200000 ? text.slice(0, 200000) : text;
+    const lines = splitHydroLines(prefix);
     let validDataLines = 0;
     const examples = [];
 
@@ -505,89 +763,29 @@ function validateFileFormat(text) {
         }
     }
 
-    const detected = detectHydroFileKind(text);
-
     console.log('HYDROTHERM scalar validation summary:', {
-        totalLines: lines.length,
+        prefixScanned: prefix.length,
         validDataLines,
-        detected,
         examples
     });
 
     if (validDataLines === 0) {
-        console.log('First 30 raw lines:', lines.slice(0, 30));
         return {
             isValid: false,
-            error:
-                `No valid scalar data rows were found. ` +
-                `Detected kind: ${detected.kind}; ` +
-                `scalar-like rows: ${detected.scalarRows}; ` +
-                `vector-like rows: ${detected.vectorRows}.`
+            error: 'No valid scalar data rows were found in the first 200 KB of the file.'
         };
     }
 
-    return {
-        isValid: true,
-        error: null,
-        stats: {
-            totalLines: lines.length,
-            validDataLines,
-            detected
-        }
-    };
+    return { isValid: true, error: null };
 }
 
-async function buildTimeIndex(text) {
-    timeIndex = {};
-    timePoints = [];
-
-    const lines = splitHydroLines(text);
-    let currentTime = null;
-    let startLine = null;
-
-    for (let lineNum = 0; lineNum < lines.length; lineNum++) {
-        const row = tryParseScalarRow(lines[lineNum]);
-        if (!row) continue;
-
-        const time = row.time;
-
-        if (currentTime === null) {
-            currentTime = time;
-            startLine = lineNum;
-        } else if (time !== currentTime) {
-            timeIndex[currentTime] = [startLine, lineNum - 1];
-            timePoints.push(currentTime);
-            currentTime = time;
-            startLine = lineNum;
-        }
-    }
-
-    if (currentTime !== null && startLine !== null) {
-        timeIndex[currentTime] = [startLine, lines.length - 1];
-        timePoints.push(currentTime);
-    }
-
-    timePoints = Array.from(new Set(timePoints)).sort((a, b) => a - b);
-}
-
-function parseTimeStepData(text, time) {
-    const range = timeIndex[time];
-    if (!range) return [];
-
-    const [start, end] = range;
-    const lines = splitHydroLines(text).slice(start, end + 1);
-    const data = [];
-
-    for (const line of lines) {
-        const row = tryParseScalarRow(line);
-        if (!row) continue;
-
-        if (row.time === time) {
-            data.push(row);
-        }
-    }
-
-    return data;
+// Legacy shim: callers that still ask for a timestep by float-time get the
+// materialized object array for that step. Backed by typed arrays now.
+function parseTimeStepData(_unused, time) {
+    if (!parsedScalar) return [];
+    const ti = parsedScalar.timePoints.indexOf(time);
+    if (ti === -1) return [];
+    return materializeScalarStep(parsedScalar, ti);
 }
 
 // ============================================================
@@ -610,27 +808,31 @@ async function loadVectorFile() {
     }
 
     try {
-        vectorFileText = await readFileAsText(file);
+        const rawText = await readFileAsText(file);
 
         console.log('vector file name:', file.name);
-        console.log('vector fileText length:', vectorFileText.length);
-        console.log('vector fileText first 200 chars:', JSON.stringify(vectorFileText.slice(0, 200)));
-        console.log('vector newline counts:', {
-            lf: (vectorFileText.match(/\n/g) || []).length,
-            cr: (vectorFileText.match(/\r/g) || []).length
-        });
-        console.log('vector first split length:', splitHydroLines(vectorFileText).length);
+        console.log('vector fileText length:', rawText.length);
 
-        const formatValidation = validateVectorFileFormat(vectorFileText);
+        const formatValidation = validateVectorFileFormat(rawText);
         if (!formatValidation.isValid) {
             throw new Error(`Invalid vector file format: ${formatValidation.error}`);
         }
 
-        await buildVectorTimeIndex(vectorFileText);
+        const t0 = performance.now();
+        parsedVector = buildStructuredVector(rawText);
+        console.log(
+            `parsed vector in ${(performance.now() - t0).toFixed(0)} ms: ` +
+            `nt=${parsedVector.timePoints.length}, nx=${parsedVector.nx}, nz=${parsedVector.nz}`
+        );
+
+        vectorFileText = '__loaded__';
+        vectorTimePoints = parsedVector.timePoints;
 
         const currentTime = timePoints[currentTimeIndex];
         const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
-        vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
+        const bestTi = bestVectorTime !== null
+            ? vectorTimePoints.indexOf(bestVectorTime) : -1;
+        vectorData = bestTi >= 0 ? materializeVectorStep(parsedVector, bestTi) : [];
 
         vectorType = vectorTypeSelect.value;
         arrowScale = parseFloat(arrowScaleSlider.value);
@@ -643,7 +845,8 @@ async function loadVectorFile() {
 }
 
 function validateVectorFileFormat(text) {
-    const lines = splitHydroLines(text);
+    const prefix = text.length > 200000 ? text.slice(0, 200000) : text;
+    const lines = splitHydroLines(prefix);
     let validDataLines = 0;
     const examples = [];
 
@@ -657,88 +860,28 @@ function validateVectorFileFormat(text) {
         }
     }
 
-    const detected = detectHydroFileKind(text);
-
     console.log('HYDROTHERM vector validation summary:', {
-        totalLines: lines.length,
+        prefixScanned: prefix.length,
         validDataLines,
-        detected,
         examples
     });
 
     if (validDataLines === 0) {
-        console.log('First 30 raw vector lines:', lines.slice(0, 30));
         return {
             isValid: false,
-            error:
-                `No valid vector data rows were found. ` +
-                `Detected kind: ${detected.kind}; ` +
-                `scalar-like rows: ${detected.scalarRows}; ` +
-                `vector-like rows: ${detected.vectorRows}.`
+            error: 'No valid vector data rows were found in the first 200 KB of the file.'
         };
     }
 
-    return {
-        isValid: true,
-        error: null,
-        stats: {
-            totalLines: lines.length,
-            validDataLines,
-            detected
-        }
-    };
+    return { isValid: true, error: null };
 }
 
-async function buildVectorTimeIndex(text) {
-    vectorTimeIndex = {};
-    vectorTimePoints = [];
-
-    const lines = splitHydroLines(text);
-    let currentTime = null;
-    let startLine = null;
-
-    for (let lineNum = 0; lineNum < lines.length; lineNum++) {
-        const row = tryParseVectorRow(lines[lineNum]);
-        if (!row) continue;
-
-        const time = row.time;
-
-        if (currentTime === null) {
-            currentTime = time;
-            startLine = lineNum;
-        } else if (time !== currentTime) {
-            vectorTimeIndex[currentTime] = [startLine, lineNum - 1];
-            vectorTimePoints.push(currentTime);
-            currentTime = time;
-            startLine = lineNum;
-        }
-    }
-
-    if (currentTime !== null && startLine !== null) {
-        vectorTimeIndex[currentTime] = [startLine, lines.length - 1];
-        vectorTimePoints.push(currentTime);
-    }
-
-    vectorTimePoints = Array.from(new Set(vectorTimePoints)).sort((a, b) => a - b);
-}
-
-function parseVectorTimeStepData(text, time) {
-    if (!vectorTimeIndex[time]) return [];
-
-    const [start, end] = vectorTimeIndex[time];
-    const lines = splitHydroLines(text).slice(start, end + 1);
-    const data = [];
-
-    for (const line of lines) {
-        const row = tryParseVectorRow(line);
-        if (!row) continue;
-
-        if (row.time === time) {
-            data.push(row);
-        }
-    }
-
-    return data;
+// Legacy shim, mirroring parseTimeStepData.
+function parseVectorTimeStepData(_unused, time) {
+    if (!parsedVector) return [];
+    const ti = parsedVector.timePoints.indexOf(time);
+    if (ti === -1) return [];
+    return materializeVectorStep(parsedVector, ti);
 }
 
 function clearVectors() {
@@ -746,6 +889,7 @@ function clearVectors() {
     vectorFileText = null;
     vectorTimeIndex = {};
     vectorTimePoints = [];
+    parsedVector = null;
     plotData();
 }
 
@@ -859,19 +1003,19 @@ function setupVectorControls() {
     arrowScaleSlider.oninput = function () {
         arrowScale = parseFloat(this.value);
         updateArrowScaleDisplay(arrowScaleDisplay);
-        if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
-            plotData();
-        }
+        if (parsedVector) plotData();
     };
 
     updateArrowScaleDisplay(arrowScaleDisplay);
 
     vectorTypeSelect.addEventListener('change', function () {
         vectorType = this.value;
-        if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
+        if (parsedVector) {
             const currentTime = timePoints[currentTimeIndex];
             const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
-            vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
+            const bestTi = bestVectorTime !== null
+                ? vectorTimePoints.indexOf(bestVectorTime) : -1;
+            vectorData = bestTi >= 0 ? materializeVectorStep(parsedVector, bestTi) : [];
             plotData();
         }
     });
@@ -879,9 +1023,7 @@ function setupVectorControls() {
     arrowColor = arrowColorSelect.value;
     arrowColorSelect.addEventListener('change', function () {
         arrowColor = this.value;
-        if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
-            plotData();
-        }
+        if (parsedVector) plotData();
     });
 }
 
@@ -958,8 +1100,30 @@ function updateTimeDisplay() {
 // Plotting
 // ============================================================
 
+// Build the heatmap z-matrix directly from the gridded typed array — O(N).
+function buildScalarMeshFast(p, variable, ti) {
+    const arr = p.gridded[variable];
+    if (!arr) return { x: [], y: [], z: [] };
+    const { nx, nz, xCoords, zCoords, cellsPerStep } = p;
+    const z = new Array(nz);
+    for (let iz = 0; iz < nz; iz++) {
+        const row = new Array(nx);
+        const base = ti * cellsPerStep + iz * nx;
+        for (let ix = 0; ix < nx; ix++) {
+            const v = arr[base + ix];
+            row[ix] = Number.isFinite(v) ? v : NaN;
+        }
+        z[iz] = row;
+    }
+    return {
+        x: Array.from(xCoords),
+        y: Array.from(zCoords),
+        z
+    };
+}
+
 async function plotData() {
-    if (!fileText || timePoints.length === 0) return;
+    if (!parsedScalar || timePoints.length === 0) return;
 
     const variableSelect = document.getElementById('variableSelect');
     const colormapSelect = document.getElementById('colormapSelect');
@@ -967,12 +1131,11 @@ async function plotData() {
     const selectedColormap = colormapSelect.value;
     const currentTime = timePoints[currentTimeIndex];
 
-    const timeData = parseTimeStepData(fileText, currentTime);
-    if (timeData.length === 0) return;
-
-    if (vectorFileText && Object.keys(vectorTimeIndex).length > 0) {
+    if (parsedVector) {
         const bestVectorTime = getClosestTimeValue(currentTime, vectorTimePoints);
-        vectorData = bestVectorTime !== null ? parseVectorTimeStepData(vectorFileText, bestVectorTime) : [];
+        const bestTi = bestVectorTime !== null
+            ? vectorTimePoints.indexOf(bestVectorTime) : -1;
+        vectorData = bestTi >= 0 ? materializeVectorStep(parsedVector, bestTi) : [];
     }
 
     let meshData;
@@ -981,31 +1144,36 @@ async function plotData() {
             alert('Please load a vector file to plot vector-derived quantities.');
             return;
         }
-
+        const timeData = materializeScalarStep(parsedScalar, currentTimeIndex);
         const tempLookup = buildTemperatureLookup(timeData);
         const derivedRows = deriveVectorField(vectorData, selectedVariable, tempLookup);
         meshData = createMeshGridFromXYZ(derivedRows);
     } else {
-        meshData = createMeshGrid(timeData, selectedVariable);
+        meshData = buildScalarMeshFast(parsedScalar, selectedVariable, currentTimeIndex);
     }
 
-    const allValues = meshData.z.flat().filter(val => !isNaN(val) && isFinite(val));
-    if (allValues.length > 0) {
-        currentDataRange = {
-            min: Math.min(...allValues),
-            max: Math.max(...allValues)
-        };
+    // Compute color/axis ranges without spread-into-Math.min — works at any size.
+    {
+        let lo = Infinity, hi = -Infinity;
+        for (const row of meshData.z) {
+            for (let j = 0; j < row.length; j++) {
+                const v = row[j];
+                if (Number.isFinite(v)) {
+                    if (v < lo) lo = v;
+                    if (v > hi) hi = v;
+                }
+            }
+        }
+        if (lo !== Infinity) currentDataRange = { min: lo, max: hi };
     }
 
-    if (meshData.x.length > 0 && meshData.y.length > 0) {
-        currentXRange = {
-            min: Math.min(...meshData.x),
-            max: Math.max(...meshData.x)
-        };
-        currentZRange = {
-            min: Math.min(...meshData.y),
-            max: Math.max(...meshData.y)
-        };
+    if (meshData.x.length > 0) {
+        const xLo = meshData.x[0], xHi = meshData.x[meshData.x.length - 1];
+        currentXRange = { min: Math.min(xLo, xHi), max: Math.max(xLo, xHi) };
+    }
+    if (meshData.y.length > 0) {
+        const zLo = meshData.y[0], zHi = meshData.y[meshData.y.length - 1];
+        currentZRange = { min: Math.min(zLo, zHi), max: Math.max(zLo, zHi) };
     }
 
     const colorbarRange = customColorbarRange || currentDataRange;
@@ -1189,30 +1357,31 @@ async function plotData() {
     updateZRangeDisplay();
 }
 
+// Legacy createMeshGrid kept as a compatibility shim, but now O(N) using
+// the parsedScalar coordinate index.
 function createMeshGrid(data, variable) {
+    if (parsedScalar) {
+        const { nx, nz, xCoords, zCoords, xIndex, zIndex } = parsedScalar;
+        const z = Array.from({ length: nz }, () => Array(nx).fill(NaN));
+        for (const r of data) {
+            const ix = xIndex.get(r.x);
+            const iz = zIndex.get(r.z);
+            if (ix !== undefined && iz !== undefined) {
+                z[iz][ix] = r[variable];
+            }
+        }
+        return { x: Array.from(xCoords), y: Array.from(zCoords), z };
+    }
+    // Fallback (no parsed grid available).
     const xCoords = [...new Set(data.map(row => row.x))].sort((a, b) => a - b);
     const zCoords = [...new Set(data.map(row => row.z))].sort((a, b) => a - b);
-
-    const zMatrix = [];
-
-    for (let i = 0; i < zCoords.length; i++) {
-        const row = [];
-        for (let j = 0; j < xCoords.length; j++) {
-            const point = data.find(d =>
-                Math.abs(d.x - xCoords[j]) < 1e-10 &&
-                Math.abs(d.z - zCoords[i]) < 1e-10
-            );
-
-            row.push(point ? point[variable] : NaN);
-        }
-        zMatrix.push(row);
+    const xIdx = new Map(xCoords.map((v, i) => [v, i]));
+    const zIdx = new Map(zCoords.map((v, i) => [v, i]));
+    const z = Array.from({ length: zCoords.length }, () => Array(xCoords.length).fill(NaN));
+    for (const r of data) {
+        z[zIdx.get(r.z)][xIdx.get(r.x)] = r[variable];
     }
-
-    return {
-        x: xCoords,
-        y: zCoords,
-        z: zMatrix
-    };
+    return { x: xCoords, y: zCoords, z };
 }
 
 function setupPlotClickSelection() {
@@ -1222,21 +1391,28 @@ function setupPlotClickSelection() {
     plotDiv.on('plotly_click', function (eventData) {
         if (!eventData || !eventData.points || eventData.points.length === 0) return;
 
-        const clicked = eventData.points[0];
+        // Only react to clicks on the heatmap layer — ignore arrow / marker clicks
+        // so the recorded coordinates always come from the data grid.
+        const heatmapPoint = eventData.points.find(p =>
+            p && p.data && p.data.type === 'heatmap'
+        );
+        const clicked = heatmapPoint || eventData.points[0];
         const x = clicked.x;
         const z = clicked.y;
 
         if (!isFinite(x) || !isFinite(z)) return;
 
-        const currentTime = timePoints[currentTimeIndex];
-        const timeData = parseTimeStepData(fileText, currentTime);
-        const { closestPoint } = findClosestScalarPoint(timeData, x, z);
-
-        if (!closestPoint) return;
+        let cellX = x, cellZ = z;
+        if (parsedScalar) {
+            const ix = nearestIndex(parsedScalar.xCoords, x);
+            const iz = nearestIndex(parsedScalar.zCoords, z);
+            cellX = parsedScalar.xCoords[ix];
+            cellZ = parsedScalar.zCoords[iz];
+        }
 
         const slot = nextPointSlot;
-        document.getElementById(`xCoord${slot}`).value = closestPoint.x.toFixed(3);
-        document.getElementById(`zCoord${slot}`).value = closestPoint.z.toFixed(3);
+        document.getElementById(`xCoord${slot}`).value = cellX.toFixed(3);
+        document.getElementById(`zCoord${slot}`).value = cellZ.toFixed(3);
 
         nextPointSlot = slot === 4 ? 1 : slot + 1;
 
@@ -1279,11 +1455,7 @@ function formatValue(value, variable) {
 }
 
 function getRange(values) {
-    const validValues = values.filter(v => !isNaN(v) && isFinite(v));
-    return {
-        min: Math.min(...validValues),
-        max: Math.max(...validValues)
-    };
+    return arrayMinMaxFinite(values);
 }
 
 // ============================================================
@@ -1340,8 +1512,82 @@ function updatePlottedPointsFromInputs() {
     plottedPoints = getPointsFromInputs();
 }
 
+// Walk the gridded typed arrays directly — no per-step text parsing, no
+// per-step object allocation. For each requested point we resolve (ix, iz)
+// once via binary search and then read nt values out of the variable buffer.
+function gatherTimeSeries(variable, ix, iz) {
+    if (!parsedScalar) return [];
+    const isDerived = isDerivedVectorField(variable);
+    const nt = parsedScalar.timePoints.length;
+    const cps = parsedScalar.cellsPerStep;
+    const nx = parsedScalar.nx;
+    const out = new Array(nt);
+
+    if (!isDerived) {
+        const buf = parsedScalar.gridded[variable];
+        for (let ti = 0; ti < nt; ti++) {
+            const v = buf[ti * cps + iz * nx + ix];
+            out[ti] = { time: parsedScalar.timePoints[ti], value: v };
+        }
+        return out;
+    }
+
+    if (!parsedVector) return [];
+    // Map the scalar (ix, iz) onto the vector grid by nearest cell — typically
+    // they share a grid, but cold125-style files can differ slightly.
+    const xv = parsedScalar.xCoords[ix];
+    const zv = parsedScalar.zCoords[iz];
+    const ixv = nearestIndex(parsedVector.xCoords, xv);
+    const izv = nearestIndex(parsedVector.zCoords, zv);
+    const cpsV = parsedVector.cellsPerStep;
+    const nxV = parsedVector.nx;
+    const ntV = parsedVector.timePoints.length;
+
+    const xw = parsedVector.gridded.xw;
+    const yw = parsedVector.gridded.yw;
+    const zw = parsedVector.gridded.zw;
+    const xs = parsedVector.gridded.xs;
+    const ys = parsedVector.gridded.ys;
+    const zs = parsedVector.gridded.zs;
+
+    let cellAreaM2 = 1.0;
+    if (variable === 'heat_flux_total') {
+        const xCoordsV = parsedVector.xCoords;
+        const zCoordsV = parsedVector.zCoords;
+        if (xCoordsV.length > 1 && zCoordsV.length > 1) {
+            const dx = Math.abs(xCoordsV[1] - xCoordsV[0]) * 1000.0;
+            const dz = Math.abs(zCoordsV[1] - zCoordsV[0]) * 1000.0;
+            cellAreaM2 = dx * dz;
+        }
+    }
+
+    const tempBuf = parsedScalar.gridded.temperature;
+
+    for (let ti = 0; ti < nt; ti++) {
+        const tNow = parsedScalar.timePoints[ti];
+        const tvIdx = (ntV === nt) ? ti : nearestIndex(parsedVector.timePoints, tNow);
+        const off = tvIdx * cpsV + izv * nxV + ixv;
+        const wmag = mag3(xw[off], yw[off], zw[off]);
+        const smag = mag3(xs[off], ys[off], zs[off]);
+
+        let value;
+        if (variable === 'water_flux_mag') value = wmag;
+        else if (variable === 'steam_flux_mag') value = smag;
+        else if (variable === 'total_flux_mag') value = wmag + smag;
+        else {
+            const tempC = tempBuf[ti * cps + iz * nx + ix];
+            const q = computeHeatFluxDensityWm2(wmag, smag, tempC);
+            value = (variable === 'heat_flux_proxy')
+                ? q * 1000.0
+                : (q * cellAreaM2) / 1.0e6;
+        }
+        out[ti] = { time: tNow, value };
+    }
+    return out;
+}
+
 function plotTimeSeries() {
-    if (!fileText || timePoints.length === 0) {
+    if (!parsedScalar || timePoints.length === 0) {
         alert('Please load a data file first.');
         return;
     }
@@ -1354,7 +1600,7 @@ function plotTimeSeries() {
         return;
     }
 
-    if (isDerivedVectorField(selectedVariable) && (!vectorFileText || vectorTimePoints.length === 0)) {
+    if (isDerivedVectorField(selectedVariable) && !parsedVector) {
         alert('Please load a vector file first for vector-derived time series.');
         return;
     }
@@ -1364,62 +1610,24 @@ function plotTimeSeries() {
     const allTraces = [];
 
     for (const point of points) {
-        const timeSeriesData = [];
-        const cellAreaM2 = vectorFileText ? computeTypicalCellAreaM2FromVectorRows(vectorData || []) : 1.0;
+        const ix = nearestIndex(parsedScalar.xCoords, point.x);
+        const iz = nearestIndex(parsedScalar.zCoords, point.z);
+        if (ix < 0 || iz < 0) continue;
 
-        for (const time of timePoints) {
-            const scalarTimeData = parseTimeStepData(fileText, time);
-            const scalarResult = findClosestScalarPoint(scalarTimeData, point.x, point.z);
+        const series = gatherTimeSeries(selectedVariable, ix, iz)
+            .filter(d => Number.isFinite(d.value));
 
-            if (!scalarResult.closestPoint || scalarResult.minDistance >= 0.1) continue;
+        if (series.length === 0) continue;
 
-            let value = NaN;
-
-            if (isDerivedVectorField(selectedVariable)) {
-                const bestVectorTime = getClosestTimeValue(time, vectorTimePoints);
-                if (bestVectorTime === null) continue;
-
-                const vectorTimeData = parseVectorTimeStepData(vectorFileText, bestVectorTime);
-                const vectorResult = findClosestVectorPoint(vectorTimeData, point.x, point.z);
-                if (!vectorResult.closestPoint || vectorResult.minDistance >= 0.1) continue;
-
-                const localCellAreaM2 = computeTypicalCellAreaM2FromVectorRows(vectorTimeData) || cellAreaM2;
-
-                value = computeDerivedValueAtPoint(
-                    selectedVariable,
-                    vectorResult.closestPoint,
-                    scalarResult.closestPoint,
-                    localCellAreaM2
-                );
-            } else {
-                value = scalarResult.closestPoint[selectedVariable];
-            }
-
-            if (isFinite(value)) {
-                timeSeriesData.push({
-                    time: time,
-                    value: value
-                });
-            }
-        }
-
-        if (timeSeriesData.length > 0) {
-            allTraces.push({
-                x: timeSeriesData.map(d => d.time),
-                y: timeSeriesData.map(d => d.value),
-                type: 'scatter',
-                mode: 'lines+markers',
-                line: {
-                    color: point.color,
-                    width: 3
-                },
-                marker: {
-                    size: 6,
-                    color: point.color
-                },
-                name: `Point ${point.id} (${point.x.toFixed(3)}, ${point.z.toFixed(3)})`
-            });
-        }
+        allTraces.push({
+            x: series.map(d => d.time),
+            y: series.map(d => d.value),
+            type: 'scatter',
+            mode: 'lines+markers',
+            line: { color: point.color, width: 3 },
+            marker: { size: 6, color: point.color },
+            name: `Point ${point.id} (${point.x.toFixed(3)}, ${point.z.toFixed(3)})`
+        });
     }
 
     if (allTraces.length === 0) {
@@ -1489,19 +1697,18 @@ function showTimeSeriesSection() {
     const timeSeriesSection = document.getElementById('timeSeriesSection');
     timeSeriesSection.style.display = 'block';
 
-    if (timePoints.length > 0) {
-        const firstTimeData = parseTimeStepData(fileText, timePoints[0]);
-        if (firstTimeData.length > 0) {
-            const samplePoints = [];
-            for (let i = 0; i < Math.min(4, firstTimeData.length); i++) {
-                const index = Math.floor(i * firstTimeData.length / 4);
-                samplePoints.push(firstTimeData[index]);
-            }
-
-            for (let i = 0; i < samplePoints.length; i++) {
-                document.getElementById(`xCoord${i + 1}`).value = samplePoints[i].x.toFixed(3);
-                document.getElementById(`zCoord${i + 1}`).value = samplePoints[i].z.toFixed(3);
-            }
+    if (parsedScalar && parsedScalar.xCoords.length > 0 && parsedScalar.zCoords.length > 0) {
+        const xs = parsedScalar.xCoords;
+        const zs = parsedScalar.zCoords;
+        const samples = [
+            { x: xs[Math.floor(xs.length * 0.25)], z: zs[Math.floor(zs.length * 0.25)] },
+            { x: xs[Math.floor(xs.length * 0.50)], z: zs[Math.floor(zs.length * 0.50)] },
+            { x: xs[Math.floor(xs.length * 0.75)], z: zs[Math.floor(zs.length * 0.50)] },
+            { x: xs[Math.floor(xs.length * 0.50)], z: zs[Math.floor(zs.length * 0.75)] }
+        ];
+        for (let i = 0; i < samples.length; i++) {
+            document.getElementById(`xCoord${i + 1}`).value = samples[i].x.toFixed(3);
+            document.getElementById(`zCoord${i + 1}`).value = samples[i].z.toFixed(3);
         }
     }
 
@@ -1509,7 +1716,7 @@ function showTimeSeriesSection() {
 }
 
 function downloadTimeSeriesCSV() {
-    if (!fileText || timePoints.length === 0) {
+    if (!parsedScalar || timePoints.length === 0) {
         alert('Please load a data file first.');
         return;
     }
@@ -1522,60 +1729,28 @@ function downloadTimeSeriesCSV() {
 
     const selectedVariable = document.getElementById('timeSeriesVariable').value;
 
-    if (isDerivedVectorField(selectedVariable) && (!vectorFileText || vectorTimePoints.length === 0)) {
+    if (isDerivedVectorField(selectedVariable) && !parsedVector) {
         alert('Please load a vector file first for vector-derived time series.');
         return;
     }
 
+    const allSeries = points.map(p => {
+        const ix = nearestIndex(parsedScalar.xCoords, p.x);
+        const iz = nearestIndex(parsedScalar.zCoords, p.z);
+        return (ix < 0 || iz < 0) ? [] : gatherTimeSeries(selectedVariable, ix, iz);
+    });
+
     let csv = 'time';
-    for (let i = 0; i < points.length; i++) {
-        csv += `,point${i + 1}`;
-    }
+    for (let i = 0; i < points.length; i++) csv += `,point${i + 1}`;
     csv += '\n';
 
-    for (const time of timePoints) {
-        const scalarTimeData = parseTimeStepData(fileText, time);
-        const bestVectorTime = isDerivedVectorField(selectedVariable)
-            ? getClosestTimeValue(time, vectorTimePoints)
-            : null;
-        const vectorTimeData = (isDerivedVectorField(selectedVariable) && bestVectorTime !== null)
-            ? parseVectorTimeStepData(vectorFileText, bestVectorTime)
-            : null;
-
-        csv += `${time}`;
-
+    const nt = parsedScalar.timePoints.length;
+    for (let ti = 0; ti < nt; ti++) {
+        csv += `${parsedScalar.timePoints[ti]}`;
         for (let i = 0; i < points.length; i++) {
-            const p = points[i];
-            const scalarResult = findClosestScalarPoint(scalarTimeData, p.x, p.z);
-
-            let value = '';
-
-            if (scalarResult.closestPoint) {
-                if (isDerivedVectorField(selectedVariable)) {
-                    const vectorResult = vectorTimeData
-                        ? findClosestVectorPoint(vectorTimeData, p.x, p.z)
-                        : { closestPoint: null };
-
-                    if (vectorResult.closestPoint) {
-                        const localCellAreaM2 = vectorTimeData
-                            ? computeTypicalCellAreaM2FromVectorRows(vectorTimeData)
-                            : 1.0;
-
-                        value = computeDerivedValueAtPoint(
-                            selectedVariable,
-                            vectorResult.closestPoint,
-                            scalarResult.closestPoint,
-                            localCellAreaM2
-                        );
-                    }
-                } else {
-                    value = scalarResult.closestPoint[selectedVariable];
-                }
-            }
-
-            csv += `,${value}`;
+            const s = allSeries[i][ti];
+            csv += `,${(s && Number.isFinite(s.value)) ? s.value : ''}`;
         }
-
         csv += '\n';
     }
 
@@ -1593,9 +1768,40 @@ function downloadTimeSeriesCSV() {
 // ============================================================
 // GIF export
 // ============================================================
+//
+// Renders a real animated GIF in-browser using gif.js (already vendored in
+// the repo as gif.js / gif.worker.js). gif.js is loaded on demand the first
+// time the user clicks Export, so the page doesn't pay for it on every load.
+
+let _gifLibPromise = null;
+
+function ensureGifLibLoaded() {
+    if (window.GIF) return Promise.resolve();
+    if (_gifLibPromise) return _gifLibPromise;
+    _gifLibPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'gif.js';
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error('Failed to load gif.js'));
+        document.head.appendChild(s);
+    });
+    return _gifLibPromise;
+}
+
+function _ensureGifProgressDiv(plotDiv) {
+    let div = document.getElementById('gifExportProgress');
+    if (!div) {
+        div = document.createElement('div');
+        div.id = 'gifExportProgress';
+        div.style = 'color: #fff; background: #222; padding: 10px; border-radius: 8px; margin: 10px 0;';
+        plotDiv.parentNode.insertBefore(div, plotDiv);
+    }
+    return div;
+}
 
 async function exportGifAnimation() {
-    if (!fileText || timePoints.length === 0) {
+    if (!parsedScalar || timePoints.length === 0) {
         alert('Please load a data file first.');
         return;
     }
@@ -1605,41 +1811,68 @@ async function exportGifAnimation() {
     const [width, height] = resString.split('x').map(Number);
     const plotDiv = document.getElementById('plotContainer');
     const nFrames = timePoints.length;
-    const folderName = `plot_frames_${Date.now()}`;
-    const zip = new JSZip();
-    zip.folder(folderName);
+    const progress = _ensureGifProgressDiv(plotDiv);
 
-    let progressDiv = document.getElementById('gifExportProgress');
-    if (!progressDiv) {
-        progressDiv = document.createElement('div');
-        progressDiv.id = 'gifExportProgress';
-        progressDiv.style = 'color: #fff; background: #222; padding: 10px; border-radius: 8px; margin: 10px 0;';
-        plotDiv.parentNode.insertBefore(progressDiv, plotDiv);
+    progress.textContent = 'Loading GIF encoder…';
+    try {
+        await ensureGifLibLoaded();
+    } catch (e) {
+        progress.textContent = 'Could not load gif.js. Make sure gif.js and gif.worker.js are served alongside index.html.';
+        console.error(e);
+        return;
     }
 
-    let nExported = 0;
+    const gif = new window.GIF({
+        workers: 2,
+        quality: 10,
+        width,
+        height,
+        workerScript: 'gif.worker.js',
+        repeat: 0,
+        background: currentTheme === 'dark' ? '#1a1a1a' : '#ffffff'
+    });
+
+    gif.on('progress', p => {
+        progress.textContent = `Encoding: ${(p * 100).toFixed(1)}%`;
+    });
+
+    let frameIndex = 0;
+    const totalFrames = Math.ceil(nFrames / frameStep);
+
     for (let i = 0; i < nFrames; i += frameStep) {
         currentTimeIndex = i;
         await plotData();
-        await new Promise(r => setTimeout(r, 100));
+        // Plotly renders synchronously to the DOM but its internal canvas
+        // composition needs a tick before toImage gives a complete frame.
+        await new Promise(r => requestAnimationFrame(() => r()));
 
-        const pngDataUrl = await Plotly.toImage(plotDiv, { format: 'png', width, height });
-        const res = await fetch(pngDataUrl);
-        const blob = await res.blob();
+        const pngUrl = await Plotly.toImage(plotDiv, { format: 'png', width, height });
+        const img = await new Promise((resolve, reject) => {
+            const im = new Image();
+            im.onload = () => resolve(im);
+            im.onerror = reject;
+            im.src = pngUrl;
+        });
 
-        const filename = `${folderName}/frame_${String(i).padStart(3, '0')}.png`;
-        zip.file(filename, blob);
-
-        nExported++;
-        progressDiv.textContent = `Exported frame ${nExported} (step ${i + 1} of ${nFrames})`;
-        await new Promise(r => setTimeout(r, 100));
+        gif.addFrame(img, { delay: 50, copy: true });
+        frameIndex++;
+        progress.textContent = `Captured frame ${frameIndex} / ${totalFrames}`;
     }
 
-    progressDiv.textContent = `Zipping frames...`;
-    const zipBlob = await zip.generateAsync({ type: 'blob' });
-    saveAs(zipBlob, `${folderName}.zip`);
-    progressDiv.textContent = `Done! Unzip ${folderName}.zip, then run: convert -delay 5 *.png screens.gif`;
-    setTimeout(() => progressDiv.remove(), 15000);
+    progress.textContent = 'Encoding GIF…';
+    gif.on('finished', blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `hydrotherm_animation_${Date.now()}.gif`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        progress.textContent = `Done — ${(blob.size / 1024 / 1024).toFixed(2)} MB GIF downloaded.`;
+        setTimeout(() => progress.remove(), 15000);
+    });
+    gif.render();
 }
 
 // ============================================================
@@ -1653,7 +1886,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const downloadTimeSeriesBtn = document.getElementById('downloadTimeSeriesBtn');
 
     variableSelect.addEventListener('change', function () {
-        if (fileText) {
+        if (parsedScalar) {
             customColorbarRange = null;
             customXRange = null;
             customZRange = null;
@@ -1665,15 +1898,13 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     colormapSelect.addEventListener('change', function () {
-        if (fileText) {
-            plotData();
-        }
+        if (parsedScalar) plotData();
     });
 
     themeSelect.addEventListener('change', function () {
         currentTheme = this.value;
         applyTheme(currentTheme);
-        if (fileText) {
+        if (parsedScalar) {
             plotData();
             if (document.getElementById('timeSeriesSection').style.display !== 'none') {
                 plotTimeSeries();
@@ -1696,7 +1927,7 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 document.addEventListener('keydown', function (e) {
-    if (!fileText) return;
+    if (!parsedScalar) return;
 
     const timeRange = document.getElementById('timeRange');
     const currentValue = parseInt(timeRange.value, 10);
@@ -1711,7 +1942,7 @@ document.addEventListener('keydown', function (e) {
 });
 
 window.addEventListener('resize', function () {
-    if (fileText && timePoints.length > 0) {
+    if (parsedScalar && timePoints.length > 0) {
         clearTimeout(window.resizeTimeout);
         window.resizeTimeout = setTimeout(() => {
             plotData();
