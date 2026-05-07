@@ -1070,6 +1070,20 @@ function _onParseProgress(label) {
     };
 }
 
+// Quick probe: read the first 200 KB of `file` and decide whether it
+// looks like a Plot_scalar or Plot_vector. Returns 'scalar', 'vector',
+// or 'unknown'. Cheap — just enough rows to make a confident call.
+async function detectFileKind(file) {
+    const probeBytes = Math.min(file.size || 200000, 200000);
+    let text;
+    try {
+        text = await file.slice(0, probeBytes).text();
+    } catch (e) {
+        return 'unknown';
+    }
+    return detectHydroFileKind(text).kind;
+}
+
 async function loadAndProcessFile() {
     const fileInput = document.getElementById('fileInput');
     const file = fileInput.files[0];
@@ -1086,6 +1100,27 @@ async function loadAndProcessFile() {
         console.warn('Filename does not match expected Plot_scalar pattern:', file.name);
     }
     clearErrorCard();
+
+    // Sniff the file before committing to a full parse — it's much
+    // friendlier to say "you uploaded a Plot_vector by mistake" than to
+    // wait for the grid-detection step to fail with a generic error.
+    const detectedKind = await detectFileKind(file);
+    if (detectedKind === 'vector') {
+        showErrorCard({
+            title: 'That looks like a Plot_vector file',
+            body:
+                `${file.name} has 10 numeric columns ending in mass-flux ` +
+                'fields, which is the Plot_vector layout. Plot_scalar files ' +
+                'have 8–9 columns (temperature, pressure, saturation, phase…).',
+            kind: 'warning',
+            suggestions: [
+                'Open the "Vector overlay & flux fields" expander below and load this file there instead.',
+                'Then load the matching Plot_scalar.<run> file in this first picker.',
+                'The two files come as a pair from each HYDROTHERM run with the same run id (e.g. .convectMars).'
+            ]
+        });
+        return;
+    }
 
     showLoading(true);
     _setLoadingMessage(`Reading scalar file… (${_formatBytes(file.size)})`);
@@ -1196,6 +1231,26 @@ async function loadVectorFile() {
 
     if (!/plot[_ ]?vector/i.test(file.name)) {
         console.warn('Filename does not match expected Plot_vector pattern:', file.name);
+    }
+    clearErrorCard();
+
+    // Sniff before parsing.
+    const detectedKind = await detectFileKind(file);
+    if (detectedKind === 'scalar') {
+        showErrorCard({
+            title: 'That looks like a Plot_scalar file',
+            body:
+                `${file.name} has 8–9 columns ending in temperature/pressure/` +
+                'saturation/phase, which is the Plot_scalar layout. Plot_vector ' +
+                'files have 10 columns of mass-flux components.',
+            kind: 'warning',
+            suggestions: [
+                'Drop this file in the FIRST picker (the scalar one) at the top of the page.',
+                'Then load the matching Plot_vector.<run> file here.',
+                'The two come as a pair from each HYDROTHERM run with the same run id.'
+            ]
+        });
+        return;
     }
 
     showLoading(true);
