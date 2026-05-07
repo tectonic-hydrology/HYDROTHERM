@@ -216,8 +216,15 @@
 <body data-theme="dark">
     <div class="container-fluid">
         <div class="main-container">
-            <h1 class="text-center mb-4">
+            <h1 class="text-center mb-4 position-relative">
                 <i class="fas fa-chart-area"></i> HYDROTHERM Postprocessor
+                <button id="takeTourBtn"
+                        type="button"
+                        class="btn btn-sm btn-outline-light"
+                        style="position:absolute; top:0.4em; right:0; font-size:0.55em;"
+                        title="Walk me through the interface">
+                    <i class="fas fa-graduation-cap"></i> Take tour
+                </button>
             </h1>
 
             <div class="control-panel">
@@ -244,12 +251,24 @@
                                 <option value="water_flux_mag">Water mass-flux magnitude</option>
                                 <option value="steam_flux_mag">Steam mass-flux magnitude</option>
                                 <option value="total_flux_mag">Total mass-flux magnitude</option>
-                                <option value="heat_flux_proxy">Heat transport proxy</option>
-                                <option value="heat_flux_total">Total heat transport (MW)</option>
+                                <option value="heat_flux_density">Advective heat flux density (W/m²)</option>
+                                <option value="heat_per_cell">Net heat in/out per cell (MW)</option>
                             </optgroup>
                         </select>
-                        <div class="form-text text-light mt-2">
-                            Scalar fields use Plot_scalar. Derived fields use Plot_vector. Heat transport proxy uses built-in pure-water and steam heat-capacity lookup tables based on temperature from Plot_scalar.
+                        <div class="form-text text-light mt-2" id="variableHelp">
+                            Scalar fields come from Plot_scalar. Derived fields need Plot_vector loaded.
+                        </div>
+                        <div id="yThicknessRow" class="mt-2" style="display:none;">
+                            <label for="yThicknessKm" class="form-label" style="font-size:0.92rem;">
+                                <i class="fas fa-cube"></i> Model thickness in y (km)
+                            </label>
+                            <input type="number" class="form-control form-control-sm"
+                                   id="yThicknessKm" step="0.1" min="0.01" value="1"
+                                   style="max-width:120px;">
+                            <div class="form-text text-light" style="font-size:0.85rem;">
+                                Used to compute cell volume for the per-cell heat balance.
+                                For 2D runs (single y plane) this is the simulation’s out-of-plane extent.
+                            </div>
                         </div>
                     </div>
 
@@ -315,61 +334,73 @@
                 </div>
 
                 <div class="row mt-3">
-                    <div class="col-md-3">
-                        <label for="vectorFileInput" class="form-label">
-                            <i class="fas fa-arrows-alt"></i> Select Vector File (Optional)
-                        </label>
-                        <input type="file" class="form-control" id="vectorFileInput" accept="*">
-                    </div>
-
-                    <div class="col-md-3">
-                        <label for="vectorTypeSelect" class="form-label">
-                            <i class="fas fa-layer-group"></i> Vector Type
-                        </label>
-                        <select class="form-select" id="vectorTypeSelect">
-                            <option value="water">Water</option>
-                            <option value="steam">Steam</option>
-                            <option value="total">Total</option>
-                        </select>
-                    </div>
-
-                    <div class="col-md-3">
-                        <label for="arrowScaleSlider" class="form-label">
-                            <i class="fas fa-expand-arrows-alt"></i> Arrow Scale
-                        </label>
-                        <input type="range" class="form-range" id="arrowScaleSlider" min="-4" max="2" step="0.1" value="-2">
-                        <div class="value-display" id="arrowScaleDisplay">Scale: 1.0x</div>
-                    </div>
-
-                    <div class="col-md-3">
-                        <label for="arrowColorSelect" class="form-label">
-                            <i class="fas fa-paint-brush"></i> Arrow Color
-                        </label>
-                        <select class="form-select" id="arrowColorSelect">
-                            <option value="#0066cc">Blue</option>
-                            <option value="#ff6600">Orange</option>
-                            <option value="#e74c3c">Red</option>
-                            <option value="#27ae60">Green</option>
-                            <option value="#000000">Black</option>
-                            <option value="#8e44ad">Purple</option>
-                            <option value="#ffffff" selected>White</option>
-                        </select>
-                        <div class="mt-2">
-                            <button class="btn btn-outline-light" onclick="loadVectorFile()">
-                                <i class="fas fa-upload"></i> Load Vector
-                            </button>
-                            <button class="btn btn-outline-light btn-sm ms-2" onclick="clearVectors()">
-                                <i class="fas fa-trash"></i> Clear
-                            </button>
-                        </div>
+                    <div class="col-md-12">
+                        <button class="btn btn-outline-light btn-sm"
+                                type="button"
+                                data-bs-toggle="collapse"
+                                data-bs-target="#vectorSection"
+                                aria-expanded="false">
+                            <i class="fas fa-arrows-alt"></i> Vector overlay &amp; flux fields
+                            <i class="fas fa-chevron-down ms-1"></i>
+                        </button>
+                        <span class="form-text text-light ms-2" style="opacity:0.85;">
+                            Optional. Adds arrows and unlocks heat-flux fields.
+                        </span>
                     </div>
                 </div>
-
-                <div class="row mt-3">
-                    <div class="col-md-12">
-                        <div class="form-text text-light helper-note">
-                            Heat transport proxy uses built-in pure-water and steam heat-capacity lookup tables based on temperature from Plot_scalar. Click the main plot to fill time-series points automatically.
+                <div class="collapse mt-2" id="vectorSection">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <label for="vectorFileInput" class="form-label">
+                                <i class="fas fa-arrows-alt"></i> Select Vector File
+                            </label>
+                            <input type="file" class="form-control" id="vectorFileInput" accept="*">
                         </div>
+
+                        <div class="col-md-3">
+                            <label for="vectorTypeSelect" class="form-label">
+                                <i class="fas fa-layer-group"></i> Vector Type
+                            </label>
+                            <select class="form-select" id="vectorTypeSelect">
+                                <option value="water">Water</option>
+                                <option value="steam">Steam</option>
+                                <option value="total">Total</option>
+                            </select>
+                        </div>
+
+                        <div class="col-md-3">
+                            <label for="arrowScaleSlider" class="form-label">
+                                <i class="fas fa-expand-arrows-alt"></i> Arrow Scale
+                            </label>
+                            <input type="range" class="form-range" id="arrowScaleSlider" min="-4" max="2" step="0.1" value="-2">
+                            <div class="value-display" id="arrowScaleDisplay">Scale: 1.0x</div>
+                        </div>
+
+                        <div class="col-md-3">
+                            <label for="arrowColorSelect" class="form-label">
+                                <i class="fas fa-paint-brush"></i> Arrow Color
+                            </label>
+                            <select class="form-select" id="arrowColorSelect">
+                                <option value="#0066cc">Blue</option>
+                                <option value="#ff6600">Orange</option>
+                                <option value="#e74c3c">Red</option>
+                                <option value="#27ae60">Green</option>
+                                <option value="#000000">Black</option>
+                                <option value="#8e44ad">Purple</option>
+                                <option value="#ffffff" selected>White</option>
+                            </select>
+                            <div class="mt-2">
+                                <button class="btn btn-outline-light" onclick="loadVectorFile()">
+                                    <i class="fas fa-upload"></i> Load Vector
+                                </button>
+                                <button class="btn btn-outline-light btn-sm ms-2" onclick="clearVectors()">
+                                    <i class="fas fa-trash"></i> Clear
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-text text-light mt-2 helper-note">
+                        Click the main plot at any time to drop a time-series point at the cell you clicked.
                     </div>
                 </div>
 
@@ -381,53 +412,70 @@
                     <div class="time-display" id="timeDisplay">Time: 0.00000</div>
                 </div>
 
-                <div class="colorbar-controls" id="colorbarControls" style="display: none;">
-                    <div class="row">
-                        <div class="col-md-12">
-                            <label for="amount" class="form-label">
-                                <i class="fas fa-palette"></i> Colorbar Range
-                            </label>
-                            <div class="range-slider-container">
-                                <input type="text" id="amount" readonly style="border:0; color:white; font-weight:bold; background:transparent; text-align:center; width:100%; margin-bottom:10px;">
-                                <div id="slider-range"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="row mt-2">
-                        <div class="col-12">
-                            <button class="btn btn-sm btn-outline-light" onclick="resetColorbar()">
-                                <i class="fas fa-undo"></i> Reset to Auto Range
-                            </button>
-                        </div>
+                <div class="row mt-3" id="customizeToggleRow" style="display: none;">
+                    <div class="col-md-12">
+                        <button class="btn btn-outline-light btn-sm"
+                                type="button"
+                                data-bs-toggle="collapse"
+                                data-bs-target="#customizeSection"
+                                aria-expanded="false">
+                            <i class="fas fa-sliders-h"></i> Customize colors &amp; axes
+                            <i class="fas fa-chevron-down ms-1"></i>
+                        </button>
+                        <span class="form-text text-light ms-2" style="opacity:0.85;">
+                            Tweak the colorbar range and zoom into a sub-region of the grid.
+                        </span>
                     </div>
                 </div>
-
-                <div class="axis-controls" id="axisControls" style="display: none;">
-                    <div class="row">
-                        <div class="col-md-6">
-                            <label for="xRangeAmount" class="form-label">
-                                <i class="fas fa-arrows-alt-h"></i> X-Axis Range
-                            </label>
-                            <div class="range-slider-container">
-                                <input type="text" id="xRangeAmount" readonly style="border:0; color:white; font-weight:bold; background:transparent; text-align:center; width:100%; margin-bottom:10px;">
-                                <div id="x-slider-range"></div>
+                <div class="collapse mt-2" id="customizeSection">
+                    <div class="colorbar-controls" id="colorbarControls">
+                        <div class="row">
+                            <div class="col-md-12">
+                                <label for="amount" class="form-label">
+                                    <i class="fas fa-palette"></i> Colorbar Range
+                                </label>
+                                <div class="range-slider-container">
+                                    <input type="text" id="amount" readonly style="border:0; color:white; font-weight:bold; background:transparent; text-align:center; width:100%; margin-bottom:10px;">
+                                    <div id="slider-range"></div>
+                                </div>
                             </div>
                         </div>
-                        <div class="col-md-6">
-                            <label for="zRangeAmount" class="form-label">
-                                <i class="fas fa-arrows-alt-v"></i> Z-Axis Range
-                            </label>
-                            <div class="range-slider-container">
-                                <input type="text" id="zRangeAmount" readonly style="border:0; color:white; font-weight:bold; background:transparent; text-align:center; width:100%; margin-bottom:10px;">
-                                <div id="z-slider-range"></div>
+                        <div class="row mt-2">
+                            <div class="col-12">
+                                <button class="btn btn-sm btn-outline-light" onclick="resetColorbar()">
+                                    <i class="fas fa-undo"></i> Reset to Auto Range
+                                </button>
                             </div>
                         </div>
                     </div>
-                    <div class="row mt-2">
-                        <div class="col-12">
-                            <button class="btn btn-sm btn-outline-light" onclick="resetAxes()">
-                                <i class="fas fa-undo"></i> Reset to Auto Range
-                            </button>
+
+                    <div class="axis-controls mt-3" id="axisControls">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="xRangeAmount" class="form-label">
+                                    <i class="fas fa-arrows-alt-h"></i> X-Axis Range
+                                </label>
+                                <div class="range-slider-container">
+                                    <input type="text" id="xRangeAmount" readonly style="border:0; color:white; font-weight:bold; background:transparent; text-align:center; width:100%; margin-bottom:10px;">
+                                    <div id="x-slider-range"></div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="zRangeAmount" class="form-label">
+                                    <i class="fas fa-arrows-alt-v"></i> Z-Axis Range
+                                </label>
+                                <div class="range-slider-container">
+                                    <input type="text" id="zRangeAmount" readonly style="border:0; color:white; font-weight:bold; background:transparent; text-align:center; width:100%; margin-bottom:10px;">
+                                    <div id="z-slider-range"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row mt-2">
+                            <div class="col-12">
+                                <button class="btn btn-sm btn-outline-light" onclick="resetAxes()">
+                                    <i class="fas fa-undo"></i> Reset to Auto Range
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -470,11 +518,12 @@
                                     <option value="water_flux_mag">Water mass-flux magnitude</option>
                                     <option value="steam_flux_mag">Steam mass-flux magnitude</option>
                                     <option value="total_flux_mag">Total mass-flux magnitude</option>
-                                    <option value="heat_flux_proxy">Heat transport proxy</option>
+                                    <option value="heat_flux_density">Advective heat flux density (W/m²)</option>
+                                    <option value="heat_per_cell">Net heat in/out per cell (MW)</option>
                                 </optgroup>
                             </select>
-                            <div class="form-text text-light mt-2">
-                                Scalar fields use Plot_scalar. Derived fields use Plot_vector. Heat transport proxy uses built-in pure-water and steam heat-capacity lookup tables based on temperature from Plot_scalar.
+                            <div class="form-text text-light mt-2" id="timeSeriesVariableHelp">
+                                Pick a field to plot vs. time at the chosen point(s).
                             </div>
                         </div>
 
@@ -574,7 +623,18 @@
                 </div>
             </div>
 
-            <div class="control-panel converter-panel">
+            <div class="text-center my-3">
+                <button class="btn btn-outline-light btn-sm"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#converterPanel"
+                        aria-expanded="false">
+                    <i class="fas fa-file-code"></i> Edit a HYDROTHERM input file (PRINT 6 helper)
+                    <i class="fas fa-chevron-down ms-1"></i>
+                </button>
+            </div>
+            <div class="collapse" id="converterPanel">
+              <div class="control-panel converter-panel">
                 <h5 class="mb-3">
                     <i class="fas fa-file-code"></i> Input File Conversion
                 </h5>
@@ -613,6 +673,7 @@
                 </div>
 
                 <div id="converterStatus" class="converter-status">No file converted yet.</div>
+              </div>
             </div>
         </div>
     </div>
