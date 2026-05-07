@@ -28,6 +28,17 @@ let parsedScalar = null;      // { timePoints, xCoords, zCoords, xIndex, zIndex,
                               //   nx, nz, cellsPerStep, gridded:{var->Float32Array(nt*nz*nx)} }
 let parsedVector = null;      // similar shape with xw,yw,zw,xs,ys,zs gridded fields
 
+// Cache of all-variable time series per scalar grid cell. Filled lazily by
+// gatherAllAtCell — first request triggers one full file walk, every later
+// request for the same cell (any variable, including cross-plot pairings)
+// is instant.
+//
+//   key:   `${scalarIx}|${scalarIz}|${vectorLoaded ? 1 : 0}`
+//   value: { time, temperature, pressure, saturation, phase, nusselt,
+//            (when vector loaded:) water_flux_mag, steam_flux_mag,
+//            total_flux_mag, heat_flux_density, heat_per_cell }
+const cellAllSeriesCache = new Map();
+
 const DERIVED_VECTOR_FIELDS = [
     'water_flux_mag',
     'steam_flux_mag',
@@ -975,6 +986,146 @@ async function getCellTimeSeries(p, ix, iz, varName, onProgress) {
     return out;
 }
 
+// Single-cell heat-per-cell evaluation reusing already-loaded slices.
+// Cheap (O(1) per timestep) — only looks at the 4 face neighbours instead
+// of building the whole grid divergence.
+function _heatPerCellAtSingle(parsedScalar, parsedVector, scalarSlice, vectorSlice, vix, viz, dyMeters) {
+    const { nx, nz, xCoords, zCoords } = parsedVector;
+    const dx = getCellWidthM(xCoords, vix);
+    const dz = getCellWidthM(zCoords, viz);
+    const V = dx * dyMeters * dz;
+    const ixL = Math.max(0, vix - 1);
+    const ixR = Math.min(nx - 1, vix + 1);
+    const izD = Math.max(0, viz - 1);
+    const izU = Math.min(nz - 1, viz + 1);
+    const dxSpanM = (xCoords[ixR] - xCoords[ixL]) * 1000.0;
+    const dzSpanM = (zCoords[izU] - zCoords[izD]) * 1000.0;
+    if (dxSpanM <= 0 || dzSpanM <= 0) return NaN;
+
+    const sNx = parsedScalar.nx;
+    const Tbuf = scalarSlice.temperature;
+
+    const fx = (ix, iz) => {
+        const sIx = nearestIndex(parsedScalar.xCoords, xCoords[ix]);
+        const sIz = nearestIndex(parsedScalar.zCoords, zCoords[iz]);
+        const T = Tbuf[sIz * sNx + sIx];
+        if (!Number.isFinite(T)) return NaN;
+        const hW = getWaterEnthalpy(T) * 1000;
+        const hS = getSteamEnthalpy(T) * 1000;
+        const off = iz * nx + ix;
+        return 10.0 * (vectorSlice.xw[off] * hW + vectorSlice.xs[off] * hS);
+    };
+    const fz = (ix, iz) => {
+        const sIx = nearestIndex(parsedScalar.xCoords, xCoords[ix]);
+        const sIz = nearestIndex(parsedScalar.zCoords, zCoords[iz]);
+        const T = Tbuf[sIz * sNx + sIx];
+        if (!Number.isFinite(T)) return NaN;
+        const hW = getWaterEnthalpy(T) * 1000;
+        const hS = getSteamEnthalpy(T) * 1000;
+        const off = iz * nx + ix;
+        return 10.0 * (vectorSlice.zw[off] * hW + vectorSlice.zs[off] * hS);
+    };
+
+    const dFx = fx(ixR, viz) - fx(ixL, viz);
+    const dFz = fz(vix, izU) - fz(vix, izD);
+    if (!Number.isFinite(dFx) || !Number.isFinite(dFz)) return NaN;
+    return -(dFx / dxSpanM + dFz / dzSpanM) * V / 1.0e6;
+}
+
+// Walk every timestep ONCE for the cell at (scalarIx, scalarIz) and pull
+// every plottable variable in a single pass. This is what makes the
+// "switch the plotted variable" interaction feel instant — after the
+// first walk for a point, every variable for that point is already in
+// memory. Used by both Plot Time Series and Cross plot.
+async function gatherAllAtCell(scalarIx, scalarIz, onProgress) {
+    if (!parsedScalar) return null;
+    const key = `${scalarIx}|${scalarIz}|${parsedVector ? 1 : 0}`;
+    if (cellAllSeriesCache.has(key)) return cellAllSeriesCache.get(key);
+
+    const nt = parsedScalar.timePoints.length;
+    const out = {
+        time: Float32Array.from(parsedScalar.timePoints),
+        temperature: new Float32Array(nt),
+        pressure:    new Float32Array(nt),
+        saturation:  new Float32Array(nt),
+        phase:       new Float32Array(nt),
+        nusselt:     new Float32Array(nt)
+    };
+    if (parsedVector) {
+        out.water_flux_mag    = new Float32Array(nt);
+        out.steam_flux_mag    = new Float32Array(nt);
+        out.total_flux_mag    = new Float32Array(nt);
+        out.heat_flux_density = new Float32Array(nt);
+        out.heat_per_cell     = new Float32Array(nt);
+    }
+
+    const sNx = parsedScalar.nx;
+    let vIx = -1, vIz = -1, ntV = 0, dyM = 1000.0;
+    if (parsedVector) {
+        vIx = nearestIndex(parsedVector.xCoords, parsedScalar.xCoords[scalarIx]);
+        vIz = nearestIndex(parsedVector.zCoords, parsedScalar.zCoords[scalarIz]);
+        ntV = parsedVector.timePoints.length;
+        dyM = getYThicknessMeters();
+    }
+
+    for (let ti = 0; ti < nt; ti++) {
+        const sSlice = await ensureSlice(parsedScalar, ti);
+        const sOff = scalarIz * sNx + scalarIx;
+        const T = sSlice.temperature[sOff];
+        out.temperature[ti] = T;
+        out.pressure[ti]    = sSlice.pressure[sOff];
+        out.saturation[ti]  = sSlice.saturation[sOff];
+        out.phase[ti]       = sSlice.phase[sOff];
+        out.nusselt[ti]     = sSlice.nusselt[sOff];
+
+        if (parsedVector) {
+            const tNow = parsedScalar.timePoints[ti];
+            const tvIdx = (ntV === nt) ? ti : nearestIndex(parsedVector.timePoints, tNow);
+            const vSlice = await ensureSlice(parsedVector, tvIdx);
+            const vOff = vIz * parsedVector.nx + vIx;
+            const xw = vSlice.xw[vOff], yw = vSlice.yw[vOff], zw = vSlice.zw[vOff];
+            const xs = vSlice.xs[vOff], ys = vSlice.ys[vOff], zs = vSlice.zs[vOff];
+            const wmag = Math.sqrt(xw*xw + yw*yw + zw*zw);
+            const smag = Math.sqrt(xs*xs + ys*ys + zs*zs);
+            out.water_flux_mag[ti] = wmag;
+            out.steam_flux_mag[ti] = smag;
+            out.total_flux_mag[ti] = wmag + smag;
+            const hW = getWaterEnthalpy(T) * 1000;
+            const hS = getSteamEnthalpy(T) * 1000;
+            const Fx = 10.0 * (xw * hW + xs * hS);
+            const Fy = 10.0 * (yw * hW + ys * hS);
+            const Fz = 10.0 * (zw * hW + zs * hS);
+            out.heat_flux_density[ti] = Math.sqrt(Fx*Fx + Fy*Fy + Fz*Fz);
+            out.heat_per_cell[ti] = _heatPerCellAtSingle(
+                parsedScalar, parsedVector, sSlice, vSlice, vIx, vIz, dyM
+            );
+        }
+
+        if (onProgress && (ti % 16 === 0 || ti === nt - 1)) {
+            onProgress({ ti, total: nt });
+            await new Promise(r => setTimeout(r, 0));
+        }
+    }
+    cellAllSeriesCache.set(key, out);
+    return out;
+}
+
+// Inline progress placeholder rendered into #timeSeriesContainer while
+// gatherAllAtCell is running. Never touches the main heatmap.
+function _setTimeSeriesProgress(msg) {
+    const el = document.getElementById('timeSeriesContainer');
+    if (!el) return;
+    el.innerHTML = `
+        <div class="text-center" style="padding: 40px 10px; color: var(--text-color);">
+            <div class="spinner-border text-primary" style="width:2.5rem;height:2.5rem;" role="status"></div>
+            <p style="margin-top:18px; font-size: 0.95rem;">${msg}</p>
+            <p style="font-size: 0.8rem; opacity: 0.7;">
+                The main heatmap is still interactive — feel free to keep scrubbing the time slider while this runs.
+            </p>
+        </div>
+    `;
+}
+
 // Materialize one timestep as the array-of-objects shape derived-field
 // helpers and the vector overlay code expect. ~nx*nz objects per call —
 // fine for a per-render path (heatmap, click handler). Now async because
@@ -1070,6 +1221,20 @@ function _onParseProgress(label) {
     };
 }
 
+// Quick probe: read the first 200 KB of `file` and decide whether it
+// looks like a Plot_scalar or Plot_vector. Returns 'scalar', 'vector',
+// or 'unknown'. Cheap — just enough rows to make a confident call.
+async function detectFileKind(file) {
+    const probeBytes = Math.min(file.size || 200000, 200000);
+    let text;
+    try {
+        text = await file.slice(0, probeBytes).text();
+    } catch (e) {
+        return 'unknown';
+    }
+    return detectHydroFileKind(text).kind;
+}
+
 async function loadAndProcessFile() {
     const fileInput = document.getElementById('fileInput');
     const file = fileInput.files[0];
@@ -1086,6 +1251,27 @@ async function loadAndProcessFile() {
         console.warn('Filename does not match expected Plot_scalar pattern:', file.name);
     }
     clearErrorCard();
+
+    // Sniff the file before committing to a full parse — it's much
+    // friendlier to say "you uploaded a Plot_vector by mistake" than to
+    // wait for the grid-detection step to fail with a generic error.
+    const detectedKind = await detectFileKind(file);
+    if (detectedKind === 'vector') {
+        showErrorCard({
+            title: 'That looks like a Plot_vector file',
+            body:
+                `${file.name} has 10 numeric columns ending in mass-flux ` +
+                'fields, which is the Plot_vector layout. Plot_scalar files ' +
+                'have 8–9 columns (temperature, pressure, saturation, phase…).',
+            kind: 'warning',
+            suggestions: [
+                'Open the "Vector overlay & flux fields" expander below and load this file there instead.',
+                'Then load the matching Plot_scalar.<run> file in this first picker.',
+                'The two files come as a pair from each HYDROTHERM run with the same run id (e.g. .convectMars).'
+            ]
+        });
+        return;
+    }
 
     showLoading(true);
     _setLoadingMessage(`Reading scalar file… (${_formatBytes(file.size)})`);
@@ -1113,6 +1299,8 @@ async function loadAndProcessFile() {
         _setLoadingMessage('Loading first timestep…');
         await plotData();
         showTimeSeriesSection();
+        _populateCrossPlotSelectors();
+        _setAutoFrameStep();
         showLoading(false);
     } catch (error) {
         console.error('Error processing file:', error);
@@ -1197,6 +1385,26 @@ async function loadVectorFile() {
     if (!/plot[_ ]?vector/i.test(file.name)) {
         console.warn('Filename does not match expected Plot_vector pattern:', file.name);
     }
+    clearErrorCard();
+
+    // Sniff before parsing.
+    const detectedKind = await detectFileKind(file);
+    if (detectedKind === 'scalar') {
+        showErrorCard({
+            title: 'That looks like a Plot_scalar file',
+            body:
+                `${file.name} has 8–9 columns ending in temperature/pressure/` +
+                'saturation/phase, which is the Plot_scalar layout. Plot_vector ' +
+                'files have 10 columns of mass-flux components.',
+            kind: 'warning',
+            suggestions: [
+                'Drop this file in the FIRST picker (the scalar one) at the top of the page.',
+                'Then load the matching Plot_vector.<run> file here.',
+                'The two come as a pair from each HYDROTHERM run with the same run id.'
+            ]
+        });
+        return;
+    }
 
     showLoading(true);
     _setLoadingMessage(`Reading vector file… (${_formatBytes(file.size)})`);
@@ -1206,6 +1414,10 @@ async function loadVectorFile() {
 
         const t0 = performance.now();
         parsedVector = await buildLazyIndex(file, 'vector', _onParseProgress('vector'));
+        // The cell-all-series cache mixes scalar + vector-derived fields,
+        // so it's stale when the vector file changes.
+        cellAllSeriesCache.clear();
+        _populateCrossPlotSelectors();
         console.log(
             `indexed vector in ${((performance.now() - t0) / 1000).toFixed(1)} s: ` +
             `nt=${parsedVector.timePoints.length}, nx=${parsedVector.nx}, nz=${parsedVector.nz}`
@@ -1291,6 +1503,8 @@ function clearVectors() {
     vectorTimeIndex = {};
     vectorTimePoints = [];
     parsedVector = null;
+    cellAllSeriesCache.clear();
+    _populateCrossPlotSelectors();
     plotData();
 }
 
@@ -2104,92 +2318,18 @@ function updatePlottedPointsFromInputs() {
     plottedPoints = getPointsFromInputs();
 }
 
-// Walk every timestep on disk, reading just enough to extract the requested
-// cell's value across all timesteps. Cached per (cell, variable). The first
-// call for a (cell, variable) pair pays the I/O cost — bounded by file size,
-// typically tens of seconds for a 1 GB file — and every subsequent call hits
-// the cache and returns instantly.
+// Build a {time, value}[] series for one variable at one cell. Backed by
+// gatherAllAtCell — first call for a cell pays the file-walk cost, every
+// later call (any variable, including cross-plot pairings, CSV export)
+// hits the cache.
 async function gatherTimeSeries(variable, ix, iz, onProgress) {
     if (!parsedScalar) return [];
-    const isDerived = isDerivedVectorField(variable);
-    const nt = parsedScalar.timePoints.length;
+    const all = await gatherAllAtCell(ix, iz, onProgress);
+    if (!all || !all[variable]) return [];
+    const nt = all.time.length;
     const out = new Array(nt);
-
-    if (!isDerived) {
-        const series = await getCellTimeSeries(parsedScalar, ix, iz, variable, onProgress);
-        for (let ti = 0; ti < nt; ti++) {
-            out[ti] = { time: parsedScalar.timePoints[ti], value: series[ti] };
-        }
-        return out;
-    }
-
-    if (!parsedVector) return [];
-
-    // Map scalar (ix, iz) onto the vector grid by nearest cell — typically
-    // they share a grid, but cold125-style files can differ slightly.
-    const xv = parsedScalar.xCoords[ix];
-    const zv = parsedScalar.zCoords[iz];
-    const ixv = nearestIndex(parsedVector.xCoords, xv);
-    const izv = nearestIndex(parsedVector.zCoords, zv);
-    const ntV = parsedVector.timePoints.length;
-
-    if (variable === 'heat_per_cell') {
-        // Per-step grid-wise computation: load both slices, compute the
-        // divergence at the requested cell, multiply by cell volume.
-        const dyM = getYThicknessMeters();
-        for (let ti = 0; ti < nt; ti++) {
-            const tNow = parsedScalar.timePoints[ti];
-            const tvIdx = (ntV === nt) ? ti : nearestIndex(parsedVector.timePoints, tNow);
-            const scalarSlice = await ensureSlice(parsedScalar, ti);
-            const vectorSlice = await ensureSlice(parsedVector, tvIdx);
-            const perCellMW = computeHeatPerCellMW(
-                parsedScalar, parsedVector, scalarSlice, vectorSlice, dyM
-            );
-            const v = perCellMW[izv * parsedVector.nx + ixv];
-            out[ti] = { time: tNow, value: v };
-            if (onProgress && (ti % 16 === 0 || ti === nt - 1)) {
-                onProgress({ ti, total: nt });
-                await new Promise(r => setTimeout(r, 0));
-            }
-        }
-        return out;
-    }
-
-    // Cell-local derived fields: pull each component series once (cached).
-    const [xwS, ywS, zwS, xsS, ysS, zsS, tempS] = await Promise.all([
-        getCellTimeSeries(parsedVector, ixv, izv, 'xw'),
-        getCellTimeSeries(parsedVector, ixv, izv, 'yw'),
-        getCellTimeSeries(parsedVector, ixv, izv, 'zw'),
-        getCellTimeSeries(parsedVector, ixv, izv, 'xs'),
-        getCellTimeSeries(parsedVector, ixv, izv, 'ys'),
-        getCellTimeSeries(parsedVector, ixv, izv, 'zs'),
-        getCellTimeSeries(parsedScalar, ix, iz, 'temperature', onProgress)
-    ]);
-
     for (let ti = 0; ti < nt; ti++) {
-        const tNow = parsedScalar.timePoints[ti];
-        const tvIdx = (ntV === nt) ? ti : nearestIndex(parsedVector.timePoints, tNow);
-        const xw = xwS[tvIdx], yw = ywS[tvIdx], zw = zwS[tvIdx];
-        const xs = xsS[tvIdx], ys = ysS[tvIdx], zs = zsS[tvIdx];
-        const wmag = mag3(xw, yw, zw);
-        const smag = mag3(xs, ys, zs);
-
-        let value;
-        if (variable === 'water_flux_mag') value = wmag;
-        else if (variable === 'steam_flux_mag') value = smag;
-        else if (variable === 'total_flux_mag') value = wmag + smag;
-        else if (variable === 'heat_flux_density') {
-            const T = tempS[ti];
-            const hW = getWaterEnthalpy(T) * 1000;
-            const hS = getSteamEnthalpy(T) * 1000;
-            const Fx = 10.0 * (xw * hW + xs * hS);
-            const Fy = 10.0 * (yw * hW + ys * hS);
-            const Fz = 10.0 * (zw * hW + zs * hS);
-            value = Math.sqrt(Fx*Fx + Fy*Fy + Fz*Fz);
-        } else {
-            value = NaN;
-        }
-        out[ti] = { time: tNow, value };
+        out[ti] = { time: all.time[ti], value: all[variable][ti] };
     }
     return out;
 }
@@ -2229,9 +2369,8 @@ async function plotTimeSeries() {
 
     plottedPoints = points;
 
-    // Show progress for the (potentially long) initial gather. Subsequent
-    // calls for the same cell are instant because gatherTimeSeries caches.
-    showLoading(true);
+    // Show progress INSIDE the time-series area; main heatmap stays interactive.
+    _setTimeSeriesProgress('Loading time series… this is the only slow step. Future plots for the same points are instant.');
     const allTraces = [];
 
     for (let pi = 0; pi < points.length; pi++) {
@@ -2241,11 +2380,11 @@ async function plotTimeSeries() {
         if (ix < 0 || iz < 0) continue;
 
         const onProg = ({ ti, total }) => {
-            _setLoadingMessage(
-                `Computing time series — point ${pi + 1} / ${points.length}, ` +
-                `step ${ti + 1} / ${total}`
+            _setTimeSeriesProgress(
+                `Loading point ${pi + 1} of ${points.length} — step ${ti + 1} / ${total}`
             );
         };
+        // First call for this point pulls every variable in one walk.
         const series = (await gatherTimeSeries(selectedVariable, ix, iz, onProg))
             .filter(d => Number.isFinite(d.value));
 
@@ -2263,7 +2402,9 @@ async function plotTimeSeries() {
     }
 
     if (allTraces.length === 0) {
-        showLoading(false);
+        // Reset the placeholder so the user can try again.
+        const el = document.getElementById('timeSeriesContainer');
+        if (el) el.innerHTML = '<div class="text-center text-muted"><i class="fas fa-chart-line fa-3x mb-3"></i><p>Enter X and Z coordinates or click the main plot, then click "Plot Time Series"</p></div>';
         showErrorCard({
             title: 'No data near the points you picked',
             body: 'The selected coordinates fall outside the model grid, or the ' +
@@ -2277,8 +2418,6 @@ async function plotTimeSeries() {
         });
         return;
     }
-
-    showLoading(false);
 
     const layout = {
         title: {
@@ -2392,7 +2531,8 @@ async function downloadTimeSeriesCSV() {
         return;
     }
 
-    showLoading(true);
+    // Show progress in the time-series area; main plot stays interactive.
+    _setTimeSeriesProgress('Building CSV from cached series… (will be instant if you already plotted these points)');
     const allSeries = [];
     for (let pi = 0; pi < points.length; pi++) {
         const p = points[pi];
@@ -2400,14 +2540,17 @@ async function downloadTimeSeriesCSV() {
         const iz = nearestIndex(parsedScalar.zCoords, p.z);
         if (ix < 0 || iz < 0) { allSeries.push([]); continue; }
         const onProg = ({ ti, total }) => {
-            _setLoadingMessage(
-                `Building CSV — point ${pi + 1} / ${points.length}, ` +
-                `step ${ti + 1} / ${total}`
+            _setTimeSeriesProgress(
+                `Building CSV — point ${pi + 1} of ${points.length}, step ${ti + 1} / ${total}`
             );
         };
         allSeries.push(await gatherTimeSeries(selectedVariable, ix, iz, onProg));
     }
-    showLoading(false);
+    // Restore the time-series chart placeholder if no plot has been drawn yet.
+    const tsEl = document.getElementById('timeSeriesContainer');
+    if (tsEl && tsEl.innerHTML.includes('spinner-border')) {
+        tsEl.innerHTML = '<div class="text-center text-muted"><i class="fas fa-chart-line fa-3x mb-3"></i><p>Enter X and Z coordinates or click the main plot, then click "Plot Time Series"</p></div>';
+    }
 
     let csv = 'time';
     for (let i = 0; i < points.length; i++) csv += `,point${i + 1}`;
@@ -2456,6 +2599,18 @@ function ensureGifLibLoaded() {
         document.head.appendChild(s);
     });
     return _gifLibPromise;
+}
+
+// Choose a frame step that produces ~TARGET frames in the exported GIF.
+// Called on every file load so the default is sensible for any run length.
+// The user can still override the value in the input field.
+const TARGET_GIF_FRAMES = 50;
+function _setAutoFrameStep() {
+    const el = document.getElementById('gifFrameStep');
+    if (!el || !parsedScalar) return;
+    const nt = parsedScalar.timePoints.length;
+    if (!nt) return;
+    el.value = Math.max(1, Math.ceil(nt / TARGET_GIF_FRAMES));
 }
 
 function _ensureGifProgressDiv(plotDiv) {
@@ -2546,6 +2701,204 @@ async function exportGifAnimation() {
         setTimeout(() => progress.remove(), 15000);
     });
     gif.render();
+}
+
+// ============================================================
+// Cross plot: scatter of any X variable vs any Y variable
+// ============================================================
+//
+// Uses the same selected points as the time-series chart. All variables
+// for each point come from the cellAllSeriesCache, which gatherAllAtCell
+// populates on the first time-series plot. So once the user has run
+// "Plot Time Series" once, every cross plot is instant.
+
+const CROSS_AXIS_OPTIONS_BASE = [
+    ['time',         'Time (years)'],
+    ['temperature',  'Temperature (°C)'],
+    ['pressure',     'Pressure (bar)'],
+    ['saturation',   'Saturation'],
+    ['phase',        'Phase index'],
+    ['nusselt',      'Cell Nusselt number']
+];
+const CROSS_AXIS_OPTIONS_VECTOR = [
+    ['water_flux_mag',    'Water mass-flux magnitude (g/s/cm²)'],
+    ['steam_flux_mag',    'Steam mass-flux magnitude (g/s/cm²)'],
+    ['total_flux_mag',    'Total mass-flux magnitude (g/s/cm²)'],
+    ['heat_flux_density', 'Advective heat flux density (W/m²)'],
+    ['heat_per_cell',     'Net heat in/out per cell (MW)']
+];
+
+function _populateCrossPlotSelectors() {
+    const xSel = document.getElementById('crossXSelect');
+    const ySel = document.getElementById('crossYSelect');
+    const cSel = document.getElementById('crossColorSelect');
+    if (!xSel || !ySel || !cSel) return;
+
+    const opts = CROSS_AXIS_OPTIONS_BASE.slice();
+    if (parsedVector) opts.push(...CROSS_AXIS_OPTIONS_VECTOR);
+
+    const dataOptions = opts.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+    const colorOptions =
+        '<option value="time">Time</option>' +
+        '<option value="point">Point ID</option>' +
+        opts.filter(([v]) => v !== 'time').map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+
+    // Preserve the user's current selection if still valid.
+    const xVal = xSel.value, yVal = ySel.value, cVal = cSel.value;
+    xSel.innerHTML = dataOptions;
+    ySel.innerHTML = dataOptions;
+    cSel.innerHTML = colorOptions;
+    if ([...xSel.options].some(o => o.value === xVal)) xSel.value = xVal; else xSel.value = 'temperature';
+    if ([...ySel.options].some(o => o.value === yVal)) ySel.value = yVal; else ySel.value = 'pressure';
+    if ([...cSel.options].some(o => o.value === cVal)) cSel.value = cVal; else cSel.value = 'time';
+}
+
+async function plotCrossPlot() {
+    if (!parsedScalar || timePoints.length === 0) {
+        showErrorCard({
+            title: 'No data loaded',
+            body: 'Load a Plot_scalar file before drawing a cross plot.',
+            kind: 'info'
+        });
+        return;
+    }
+    const points = getPointsFromInputs();
+    if (points.length === 0) {
+        showErrorCard({
+            title: 'No points selected',
+            body: 'Pick at least one (x, z) point first — the cross plot uses the same point set as the time series.',
+            kind: 'info'
+        });
+        return;
+    }
+    const xVar = document.getElementById('crossXSelect').value;
+    const yVar = document.getElementById('crossYSelect').value;
+    const cVar = document.getElementById('crossColorSelect').value;
+
+    const needsVector = (v) => CROSS_AXIS_OPTIONS_VECTOR.some(([k]) => k === v);
+    if ((needsVector(xVar) || needsVector(yVar) || needsVector(cVar)) && !parsedVector) {
+        showErrorCard({
+            title: 'Need a vector file for that field',
+            body: 'One of the chosen axes (or the color) is a flux-derived quantity. ' +
+                'Load a Plot_vector file first.',
+            kind: 'info'
+        });
+        return;
+    }
+
+    // Show progress in the cross-plot area, leave time-series chart alone.
+    const xPlot = document.getElementById('crossPlotContainer');
+    if (xPlot) xPlot.innerHTML = `
+        <div class="text-center" style="padding: 40px 10px; color: var(--text-color);">
+            <div class="spinner-border text-primary" style="width:2.5rem;height:2.5rem;"></div>
+            <p style="margin-top:18px; font-size: 0.95rem;">Loading point data… (instant if you already plotted these points)</p>
+        </div>`;
+
+    // Pull the cached all-variable series for each point.
+    const seriesByPoint = [];
+    for (let pi = 0; pi < points.length; pi++) {
+        const p = points[pi];
+        const ix = nearestIndex(parsedScalar.xCoords, p.x);
+        const iz = nearestIndex(parsedScalar.zCoords, p.z);
+        if (ix < 0 || iz < 0) continue;
+        const all = await gatherAllAtCell(ix, iz, ({ ti, total }) => {
+            if (xPlot) xPlot.querySelector('p').textContent =
+                `Loading point ${pi + 1} of ${points.length} — step ${ti + 1} / ${total}`;
+        });
+        if (all) seriesByPoint.push({ point: p, all });
+    }
+
+    if (seriesByPoint.length === 0) {
+        if (xPlot) xPlot.innerHTML = '<div class="text-center text-muted"><i class="fas fa-braille fa-3x mb-3"></i><p>No data near the selected points.</p></div>';
+        return;
+    }
+
+    const traces = [];
+    if (cVar === 'point') {
+        // One trace per point, colored by the point's UI color.
+        for (const { point, all } of seriesByPoint) {
+            const x = all[xVar], y = all[yVar];
+            if (!x || !y) continue;
+            traces.push({
+                x: Array.from(x),
+                y: Array.from(y),
+                type: 'scattergl',
+                mode: 'markers',
+                marker: { size: 6, color: point.color, opacity: 0.7 },
+                name: `Point ${point.id} (${point.x.toFixed(3)}, ${point.z.toFixed(3)})`
+            });
+        }
+    } else {
+        // Single trace per point with a colorbar driven by cVar (or time).
+        for (const { point, all } of seriesByPoint) {
+            const x = all[xVar], y = all[yVar];
+            const c = all[cVar];
+            if (!x || !y || !c) continue;
+            traces.push({
+                x: Array.from(x),
+                y: Array.from(y),
+                type: 'scattergl',
+                mode: 'markers',
+                marker: {
+                    size: 6,
+                    color: Array.from(c),
+                    colorscale: 'Viridis',
+                    showscale: traces.length === 0,  // only the first trace owns the colorbar
+                    colorbar: traces.length === 0 ? {
+                        title: _crossLabel(cVar),
+                        tickfont: { color: currentTheme === 'dark' ? '#fff' : '#222' },
+                        titlefont: { color: currentTheme === 'dark' ? '#fff' : '#222' }
+                    } : undefined,
+                    opacity: 0.7
+                },
+                name: `Point ${point.id} (${point.x.toFixed(3)}, ${point.z.toFixed(3)})`,
+                hovertemplate:
+                    `${_crossLabel(xVar)}: %{x}<br>${_crossLabel(yVar)}: %{y}<br>` +
+                    `${_crossLabel(cVar)}: %{marker.color}<extra>P${point.id}</extra>`
+            });
+        }
+    }
+
+    if (traces.length === 0) {
+        if (xPlot) xPlot.innerHTML = '<div class="text-center text-muted">Could not assemble any traces.</div>';
+        return;
+    }
+
+    const layout = {
+        title: { text: `${_crossLabel(yVar)}  vs  ${_crossLabel(xVar)}`,
+                 font: { size: 16, color: currentTheme === 'dark' ? '#fff' : '#333' } },
+        xaxis: { title: _crossLabel(xVar),
+                 gridcolor: currentTheme === 'dark' ? '#444' : 'lightgray',
+                 color: currentTheme === 'dark' ? '#fff' : '#333',
+                 tickfont: { color: currentTheme === 'dark' ? '#fff' : '#333' } },
+        yaxis: { title: _crossLabel(yVar),
+                 gridcolor: currentTheme === 'dark' ? '#444' : 'lightgray',
+                 color: currentTheme === 'dark' ? '#fff' : '#333',
+                 tickfont: { color: currentTheme === 'dark' ? '#fff' : '#333' } },
+        plot_bgcolor: currentTheme === 'dark' ? '#1a1a1a' : 'white',
+        paper_bgcolor: currentTheme === 'dark' ? '#1a1a1a' : 'white',
+        margin: { l: 60, r: 60, t: 60, b: 60 },
+        height: 500,
+        autosize: true,
+        showlegend: true,
+        legend: {
+            x: 0.02, y: 0.98,
+            bgcolor: currentTheme === 'dark' ? 'rgba(30,30,30,0.8)' : 'rgba(255,255,255,0.8)',
+            font: { color: currentTheme === 'dark' ? '#fff' : '#333' }
+        }
+    };
+    Plotly.newPlot('crossPlotContainer', traces, layout, {
+        responsive: true,
+        displayModeBar: true,
+        modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+        displaylogo: false
+    });
+}
+
+function _crossLabel(v) {
+    const all = CROSS_AXIS_OPTIONS_BASE.concat(CROSS_AXIS_OPTIONS_VECTOR);
+    const m = all.find(([k]) => k === v);
+    return m ? m[1] : v;
 }
 
 // ============================================================

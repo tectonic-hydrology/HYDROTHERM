@@ -621,6 +621,49 @@
                         <p>Enter X and Z coordinates or click the main plot, then click "Plot Time Series"</p>
                     </div>
                 </div>
+
+                <div class="control-panel mt-3">
+                    <h5 class="mb-3">
+                        <i class="fas fa-braille"></i> Cross plot — one variable vs another
+                    </h5>
+                    <div class="row align-items-end">
+                        <div class="col-md-3">
+                            <label for="crossXSelect" class="form-label">
+                                <i class="fas fa-arrows-alt-h"></i> X axis
+                            </label>
+                            <select class="form-select" id="crossXSelect"></select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="crossYSelect" class="form-label">
+                                <i class="fas fa-arrows-alt-v"></i> Y axis
+                            </label>
+                            <select class="form-select" id="crossYSelect"></select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="crossColorSelect" class="form-label">
+                                <i class="fas fa-palette"></i> Color by
+                            </label>
+                            <select class="form-select" id="crossColorSelect"></select>
+                        </div>
+                        <div class="col-md-3">
+                            <button class="btn btn-primary w-100" onclick="plotCrossPlot()">
+                                <i class="fas fa-play"></i> Plot cross plot
+                            </button>
+                        </div>
+                    </div>
+                    <div class="form-text text-light mt-2 helper-note">
+                        Uses the same points you picked above. Each dot is one timestep at one point.
+                        "Color by → time" reveals the trajectory through phase space; "Color by → point"
+                        shows whether different locations follow similar paths.
+                    </div>
+                </div>
+
+                <div class="plot-container" id="crossPlotContainer">
+                    <div class="text-center text-muted">
+                        <i class="fas fa-braille fa-3x mb-3"></i>
+                        <p>Pick two variables (and optionally a color), then click "Plot cross plot"</p>
+                    </div>
+                </div>
             </div>
 
             <div class="text-center my-3">
